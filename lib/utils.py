@@ -30,7 +30,7 @@ def bootstrap_gui():
         venv_python = os.path.join(config.VENV_PATH, "bin", "python")
         print("📥 Доставка графической библиотеки Textual...")
         subprocess.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"], stdout=subprocess.DEVNULL)
-        subprocess.run([venv_python, "-m", "pip", "install", "textual[dev]"], stdout=subprocess.DEVNULL)
+        subprocess.run([venv_python, "-m", "pip", "install", "textual-dev"], stdout=subprocess.DEVNULL)
         
         print("🚀 Запуск графического интерфейса...")
         os.execv(venv_python, [venv_python] + sys.argv)
