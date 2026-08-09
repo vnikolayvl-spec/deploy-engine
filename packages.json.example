@@ -1,0 +1,5 @@
+{
+  "default_manifests": [
+    "/home/admin/deploy-packages/manifest.json"
+  ]
+}

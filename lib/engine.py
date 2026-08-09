@@ -49,6 +49,32 @@ class Engine:
             else:
                 self.packages[p_name] = p_info
 
+    def load_default_manifests(self):
+        """Загружает манифесты по умолчанию из файла packages.json, если они есть"""
+        packages_json_path = "./packages.json" # Ищем в корне движка
+        
+        if not os.path.exists(packages_json_path):
+            print("❌ Ошибка: Не указан путь к manifest.json, и файл packages.json не найден.")
+            print("Использование: sudo ./deploy.py [путь_к_manifest.json] [пакет] ...")
+            sys.exit(1)
+            
+        try:
+            with open(packages_json_path, "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+                manifest_paths = config_data.get("default_manifests", [])
+                
+            if not manifest_paths:
+                print("⚠️ Предупреждение: Файл packages.json найден, но список default_manifests пуст.")
+                return False
+                
+            for path in manifest_paths:
+                print(f"📦 Автозагрузка манифеста: {path}")
+                self.load_manifest_recursive(path)
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка чтения файла настроек packages.json: {e}")
+            sys.exit(1)
+
     def resolve_dependencies(self, item_name):
         if item_name in self.units:
             self.files_to_deploy.add(item_name)
