@@ -4,6 +4,8 @@
 Рекурсивно строит вложенную структуру пакетов (пакеты внутри пакетов) и файлов,
 отображая честные зависимости и связи из manifest.json.
 """
+import os
+
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Tree, Label, Button, RichLog
 from textual.containers import Vertical, Horizontal
@@ -104,21 +106,17 @@ class DeployApp(App):
 
 
     def _build_tree_recursive(self, parent_node: TreeNode, item_name: str):
-        """Рекурсивная функция сборки дерева для визуализации 'матрешек'"""
         if item_name in self.engine.packages:
-            # Это пакет. Создаем для него красивую ветку-папку
             p_info = self.engine.packages[item_name]
             label = f"[ ] 🎁 Пакет: {item_name} ({p_info.get('desc', '')})"
             node = parent_node.add(label, data={"key": item_name, "is_package": True})
-            
-            # Спускаемся глубже по его зависимостям
             for child in p_info.get("include", []):
                 self._build_tree_recursive(node, child)
-                
         elif item_name in self.engine.units:
-            # Это конечный файл. Создаем лист дерева
             u_info = self.engine.units[item_name]
-            label = f"[ ] 📄 Файл: {item_name} ({u_info.get('desc', '')})"
+            # Добавляем визуальное различие для симлинков прямо в дереве веток
+            icon = "🔗 Симлинк:" if u_info.get("type") == "symlink" else "📄 Файл:"
+            label = f"[ ] {icon} {item_name} ({u_info.get('desc', '')})"
             parent_node.add(label, data={"key": item_name, "is_package": False})
 
     # def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
@@ -162,7 +160,7 @@ class DeployApp(App):
             self._toggle_node_and_children(child, state)
 
     def render_live_preview(self) -> None:
-        """Рендеринг путей для RichLog лога"""
+        """Интеллектуальный рендеринг путей и симлинков на лету для TUI лога"""
         log = self.query_one("#preview_log")
         log.clear()
         
@@ -175,14 +173,40 @@ class DeployApp(App):
         for target in active_targets:
             self.engine.resolve_dependencies(target)
 
-        log.write(f"[bold green]Будет обработано уникальных файлов: {len(self.engine.files_to_deploy)}[/bold green]\n" + "-"*50)
+        import deploy_config as config
+        log.write(f"[bold green]Будет обработано элементов: {len(self.engine.files_to_deploy)}[/bold green]\n" + "-"*50)
+        
         for fname in sorted(self.engine.files_to_deploy):
-            src, dest, mode, _ = self.engine.get_paths_and_modes(fname)
-            desc = self.engine.units.get(fname, {}).get("desc", "")
-            if src == "NOT_FOUND":
-                log.write(f"[red]❌ ОШИБКА: Файл {fname} отсутствует на диске пакетов![/red]")
+            file_info = self.engine.units.get(fname, {})
+            base_dir = os.path.abspath(file_info.get("base_dir", "."))
+            root_dir = os.path.abspath(file_info.get("root_dir", "."))
+            
+            src, dest, mode, f_type = self.engine.get_paths_and_modes(fname)
+            desc = file_info.get("desc", "")
+            
+            # Эмулируем шаблонизатор движка для красивого вывода реальных путей на экран
+            context_vars = {
+                "{{ROOT_DIR}}": root_dir,
+                "{{BASE_DIR}}": base_dir,
+                "{{SYS_BIN}}": config.SYS_BIN,
+                "{{SYS_SYSTEMD}}": config.SYS_SYSTEMD
+            }
+            for marker, real_value in context_vars.items():
+                if src != "NOT_FOUND":
+                    src = src.replace(marker, real_value)
+                dest = dest.replace(marker, real_value)
+
+            # Рендерим вывод в зависимости от типа
+            if f_type == "symlink":
+                log.write(f"🔗 [bold magenta][СИМЛИНК][/bold magenta] [bold]{fname}[/bold] ({desc})")
+                log.write(f"   [cyan]Ярлык:[/cyan]  {dest}")
+                log.write(f"   [cyan]Указывает на:[/cyan] {src}")
             else:
-                log.write(f"🔹 [bold]{fname}[/bold] ({desc})\n   [cyan]Куда:[/cyan] {dest} | [cyan]Права:[/cyan] {oct(mode)[2:]}")
+                if src == "NOT_FOUND":
+                    log.write(f"[red]❌ ОШИБКА: Файл {fname} отсутствует на диске пакетов![/red]")
+                else:
+                    log.write(f"🔹 [bold]{fname}[/bold] ({desc})")
+                    log.write(f"   [cyan]Куда:[/cyan]  {dest} | [cyan]Права:[/cyan] {oct(mode)[2:]}")
 
     def handle_left_right_keys(self, key_name: str) -> None:
         """Обработчик стрелок Вправо/Влево для управления раскрытием дерева"""
