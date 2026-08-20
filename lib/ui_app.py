@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Графический интерфейс Amnezia Deployer на базе Иерархического Textual Tree.
-Рекурсивно строит вложенную структуру пакетов (пакеты внутри пакетов) и файлов,
-отображая честные зависимости и связи из manifest.json.
+Графический интерфейс Multi-Manifest Deployer на базе Textual Tree.
+Поддерживает динамический рендеринг кастомных путей, символьных ссылок (symlinks)
+и отображение статуса [УСТАНОВЛЕН] из реестра состояний state.json.
 """
 import os
-
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Tree, Label, Button, RichLog
 from textual.containers import Vertical, Horizontal
 from textual.widgets.tree import TreeNode
+
+# Импортируем загрузчик состояния для фронтенда
+from lib.modules.state_manager import load_state
 
 class DeployApp(App):
     TITLE = "Independent Hierarchical Deployer"
@@ -53,8 +55,9 @@ class DeployApp(App):
     def __init__(self, engine):
         super().__init__()
         self.engine = engine
-        # Храним статусы выбора: ключ (пакет или файл) -> bool (выбран/нет)
         self.selected_states = {}
+        # Подгружаем текущее состояние системы из state.json
+        self.system_state = load_state()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -75,27 +78,20 @@ class DeployApp(App):
         """Точка старта построения дерева"""
         tree = self.query_one("#packages_tree")
         tree.root.expand()
-        
-        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Передаем фокус дереву, чтобы сразу работали стрелки!
         tree.focus()
         
-        # Чтобы дерево не дублировало пакеты, которые уже вложены в другие,
-        # найдем "корневые" пакеты — те, которые никто не включает в себя.
         all_includes = set()
         for p_info in self.engine.packages.values():
             for item in p_info.get("include", []):
                 all_includes.add(item)
                 
-        # Инициализируем статусы для всех компонентов в False
         for p_name in self.engine.packages: self.selected_states[p_name] = False
         for u_name in self.engine.units: self.selected_states[u_name] = False
 
-        # 1. Строим дерево рекурсивно, начиная только с независимых корневых пакетов
         for p_name in sorted(self.engine.packages.keys()):
             if p_name not in all_includes:
                 self._build_tree_recursive(tree.root, p_name)
 
-        # 2. Добавляем файлы, которые вообще не привязаны ни к одному пакету (сироты)
         for u_name in sorted(self.engine.units.keys()):
             if u_name not in all_includes:
                 desc = self.engine.units[u_name].get("desc", "Без описания")
@@ -104,58 +100,85 @@ class DeployApp(App):
 
         self.query_one("#preview_log").write("[yellow]Используйте ПРОБЕЛ для выбора пакетов в дереве...[/yellow]")
 
-
     def _build_tree_recursive(self, parent_node: TreeNode, item_name: str):
+        """Рекурсивно строит дерево с подсветкой установленных пакетов"""
+        installed_packages = self.system_state.get("installed_packages", {})
+
         if item_name in self.engine.packages:
             p_info = self.engine.packages[item_name]
-            label = f"[ ] 🎁 Пакет: {item_name} ({p_info.get('desc', '')})"
+            
+            # ФИЧА 1: Если пакет найден в state.json, подсвечиваем его зелёным и добавляем статус
+            if item_name in installed_packages:
+                label = f"[ ] [bold green]🎁 Пакет: {item_name} [УСТАНОВЛЕН][/bold green] ({p_info.get('desc', '')})"
+            else:
+                label = f"[ ] 🎁 Пакет: {item_name} ({p_info.get('desc', '')})"
+                
             node = parent_node.add(label, data={"key": item_name, "is_package": True})
             for child in p_info.get("include", []):
                 self._build_tree_recursive(node, child)
         elif item_name in self.engine.units:
             u_info = self.engine.units[item_name]
-            # Добавляем визуальное различие для симлинков прямо в дереве веток
             icon = "🔗 Симлинк:" if u_info.get("type") == "symlink" else "📄 Файл:"
             label = f"[ ] {icon} {item_name} ({u_info.get('desc', '')})"
             parent_node.add(label, data={"key": item_name, "is_package": False})
 
-    # def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
-    #     """Разворачивание/сворачивание веток по клавише Enter"""
-    #     node = event.node
-    #     if node.data and node.data.get("is_package"):
-    #         node.toggle()
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        """ФИЧА 2: Динамическое изменение текста кнопки Установить/Переустановить при наведении"""
+        node = event.node
+        btn = self.query_one("#btn_install")
+        installed_packages = self.system_state.get("installed_packages", {})
 
-    def handle_space_press(self) -> None:
-        """Переключатель чекбоксов по пробелу с рекурсивным выделением детей"""
+        if node and node.data:
+            key = node.data["key"]
+            # Если курсор стоит на пакете, который уже развернут в системе
+            if node.data.get("is_package") and key in installed_packages:
+                btn.label = "Переустановить"
+                btn.variant = "warning"  # Меняем цвет кнопки на оранжевый/предупреждающий
+                return
+
+        # Для всех остальных новых элементов возвращаем стандартный режим
+        btn.label = "Установить"
+        btn.variant = "success"
+
+    def handle_left_right_keys(self, key_name: str) -> None:
         tree = self.query_one("#packages_tree")
         node = tree.cursor_node
-        
-        if not node or not node.data:
-            return
+        if not node or not node.data: return
+            
+        if key_name == "right":
+            if node.data.get("is_package"):
+                if not node.is_expanded:
+                    node.expand()
+                elif node.children:
+                    tree.select_node(node.children[0])
+        elif key_name == "left":
+            if node.data.get("is_package") and node.is_expanded:
+                node.collapse()
+            else:
+                if node.parent and node.parent != tree.root:
+                    tree.select_node(node.parent)
+
+    def handle_space_press(self) -> None:
+        tree = self.query_one("#packages_tree")
+        node = tree.cursor_node
+        if not node or not node.data: return
             
         key = node.data["key"]
         new_state = not self.selected_states.get(key, False)
-        
-        # Запускаем рекурсивное обновление состояния этого узла и всех его визуальных детей
         self._toggle_node_and_children(node, new_state)
-
-        # Перерисовываем RichLog карту путей
         self.render_live_preview()
 
     def _toggle_node_and_children(self, node: TreeNode, state: bool):
-        """Рекурсивно проставляет [X] или [ ] текущему узлу и всему, что внутри него"""
-        if not node.data:
-            return
-            
+        if not node.data: return
         key = node.data["key"]
         self.selected_states[key] = state
         
-        # Обновляем текст на экране
         current_label = str(node.label)
-        if current_label.startswith("[ ]") or current_label.startswith("[X]"):
-            node.label = f"{'[X]' if state else '[ ]'}{current_label[3:]}"
+        if "[ ]" in current_label or "[X]" in current_label:
+            # Учитываем, что внутри строки могут быть теги разметки стилей Textual
+            new_prefix = "[X]" if state else "[ ]"
+            node.label = current_label.replace("[ ]", new_prefix).replace("[X]", new_prefix)
             
-        # Идем вглубь по подветкам дерева
         for child in node.children:
             self._toggle_node_and_children(child, state)
 
@@ -184,7 +207,6 @@ class DeployApp(App):
             src, dest, mode, f_type = self.engine.get_paths_and_modes(fname)
             desc = file_info.get("desc", "")
             
-            # Эмулируем шаблонизатор движка для красивого вывода реальных путей на экран
             context_vars = {
                 "{{ROOT_DIR}}": root_dir,
                 "{{BASE_DIR}}": base_dir,
@@ -192,11 +214,9 @@ class DeployApp(App):
                 "{{SYS_SYSTEMD}}": config.SYS_SYSTEMD
             }
             for marker, real_value in context_vars.items():
-                if src != "NOT_FOUND":
-                    src = src.replace(marker, real_value)
+                if src != "NOT_FOUND": src = src.replace(marker, real_value)
                 dest = dest.replace(marker, real_value)
 
-            # Рендерим вывод в зависимости от типа
             if f_type == "symlink":
                 log.write(f"🔗 [bold magenta][СИМЛИНК][/bold magenta] [bold]{fname}[/bold] ({desc})")
                 log.write(f"   [cyan]Ярлык:[/cyan]  {dest}")
@@ -208,32 +228,7 @@ class DeployApp(App):
                     log.write(f"🔹 [bold]{fname}[/bold] ({desc})")
                     log.write(f"   [cyan]Куда:[/cyan]  {dest} | [cyan]Права:[/cyan] {oct(mode)[2:]}")
 
-    def handle_left_right_keys(self, key_name: str) -> None:
-        """Обработчик стрелок Вправо/Влево для управления раскрытием дерева"""
-        tree = self.query_one("#packages_tree")
-        node = tree.cursor_node
-        
-        if not node or not node.data:
-            return
-            
-        if key_name == "right":
-            if node.data.get("is_package"):
-                if not node.is_expanded:
-                    node.expand()
-                elif node.children:
-                    # Используем безопасный метод выбора узла
-                    tree.select_node(node.children[0])
-                    
-        elif key_name == "left":
-            if node.data.get("is_package") and node.is_expanded:
-                node.collapse()
-            else:
-                if node.parent and node.parent != tree.root:
-                    # Используем безопасный метод выбора узла
-                    tree.select_node(node.parent)
-
     def on_key(self, event) -> None:
-        """Единый диспетчер клавиатурных событий приложения"""
         if event.key == "space":
             self.handle_space_press()
             event.prevent_default()
@@ -241,13 +236,12 @@ class DeployApp(App):
             self.handle_left_right_keys(event.key)
             event.prevent_default()
 
-
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_exit":
             self.exit()
         elif event.button.id == "btn_install":
             active_targets = [k for k, v in self.selected_states.items() if v]
             if not active_targets:
-                self.query_one("#preview_log").write("[red]❌ Ничего не выбрано для установки![/red]")
-                return
-            self.exit(active_targets)
+                self.query_one("#preview_log").write("[red]❌ Ничего не выбрано для операции![/red]")
+        return
+    self.exit(active_targets)

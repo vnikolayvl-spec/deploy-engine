@@ -2,42 +2,52 @@
 import sys
 import os
 
-# КРИТИЧЕСКИЙ ФИЛЬТР CLI: Если передано много аргументов и второй аргумент существует,
-# значит пользователь пытается вызвать CLI режим (например: ./deploy_ui.py manifest.json packet)
-# или через packages.json (например: ./deploy_ui.py packet1 packet2).
-# Мы сразу перенаправляем выполнение в чистый deploy.py
-if len(sys.argv) > 1:
-    # Если аргументов больше двух, или единственный аргумент не является файлом манифеста
-    if len(sys.argv) > 2 or not sys.argv[1].endswith('.json'):
-        os.execv(sys.executable, [sys.executable, "./deploy.py"] + sys.argv[1:])
+if len(sys.argv) > 2:
+    os.execv(sys.executable, [sys.executable, "./deploy.py"] + sys.argv[1:])
 
-# Запускаем автоматическую подготовку .venv и установку Textual, 
-# только если мы железно находимся в режиме интерактивной графики (TUI)
+if len(sys.argv) == 1:
+    from lib.engine import Engine
+    test_eng = Engine()
+    if not os.path.exists("./packages.json"):
+        print("Использование TUI: sudo ./deploy_ui.py [путь_к_manifest.json]")
+        sys.exit(0)
+
 from lib.utils import bootstrap_gui
 bootstrap_gui()
 
-# Импортируем бэкенд и фронтенд (доступно, так как мы уже внутри .venv)
 from lib.engine import Engine
 from lib.ui_app import DeployApp
+from lib.modules.state_manager import load_state
 
 if __name__ == "__main__":
-    engine = Engine()
+    manifest_arg = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].endswith('.json') else None
     
-    # Проверяем, передан ли аргумент-путь для графики
-    if len(sys.argv) > 1 and sys.argv[1].endswith('.json'):
-        # Если передан явный манифест, загружаем его
-        engine.load_manifest_recursive(sys.argv[1])
+    engine = Engine()
+    if manifest_arg:
+        engine.load_manifest_recursive(manifest_arg)
     else:
-        # Если запущено просто как `sudo ./deploy_ui.py`, активируем реестр packages.json
         engine.load_default_manifests()
     
-    # Инициализируем и запускаем графическое приложение Textual
     app = DeployApp(engine)
     selected_components = app.run()
     
-    # Если в интерфейсе нажали кнопку «Установить» и выбрали компоненты
     if selected_components:
-        engine.files_to_deploy.clear()
-        for t in selected_components: 
-            engine.resolve_dependencies(t)
-        engine.install_files()
+        current_state = load_state()
+        
+        for target in selected_components:
+            engine.files_to_deploy.clear()
+            engine.active_packages.clear()
+            engine.deployed_file_paths.clear()
+            
+            if target in current_state.get("installed_packages", {}):
+                print(f"\n🔄 TUI: Запуск переустановки активного пакета: {target.upper()}")
+                engine.uninstall_package(target)
+                
+                engine.resolve_dependencies(target)
+                if engine.files_to_deploy:
+                    engine.install_files()
+            else:
+                engine.resolve_dependencies(target)
+                if engine.files_to_deploy:
+                    engine.install_files()
+
