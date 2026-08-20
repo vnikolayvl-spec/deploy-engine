@@ -5,6 +5,7 @@ Amnezia Independent Deploy Engine.
 автовычисление {{ROOT_DIR}} (уровень выше манифеста) и создание символьных ссылок (symlinks).
 """
 
+#!/usr/bin/env python3
 import os
 import sys
 import json
@@ -12,11 +13,12 @@ import shutil
 import subprocess
 import deploy_config as config
 
-# ИМПОРТ НАШИХ АТОМАРНЫХ МОДУЛЕЙ
+# ИМПОРТ ВСЕХ НАШИХ МОДУЛЕЙ ПЛАГИНОВ
 from lib.modules.sys_packages import install_system_dependencies
 from lib.modules.env_manager import process_env_unit
 from lib.modules.dependency_resolver import resolve_package_dependencies
 from lib.modules.lifecycle_hooks import execute_lifecycle_hooks
+from lib.modules.state_manager import register_package_install, execute_package_uninstall, load_state
 
 class Engine:
     def __init__(self):
@@ -25,8 +27,9 @@ class Engine:
         self.loaded_manifests = set()
         self.files_to_deploy = set()
         self.sys_packages_to_install = set()   # Стек системных пакетов ОС
-        self.active_packages = set()           # Сет всех выбранных пакетов (для хуков)
-        self.active_package_context = "unknown" # Хранит имя активного пакета для песочницы
+        self.active_packages = set()           # Выбранные пакеты (для хуков)
+        self.deployed_file_paths = []          # Сюда ловим все реальные dest-пути файлов для state.json
+        self.active_package_context = "unknown" # Имя активного пакета для песочницы
         self.need_systemd_reload = False
 
     def check_root(self):
@@ -78,9 +81,8 @@ class Engine:
                 self.packages[p_name] = p_info
 
     def resolve_dependencies(self, item_name):
-        """Прокси-метод, делегирующий сбор зависимостей внешнему модулю"""
         if item_name in self.packages:
-            self.active_packages.add(item_name) # Запоминаем пакет для запуска хуков
+            self.active_packages.add(item_name)
         resolve_package_dependencies(self, item_name)
 
     def get_paths_and_modes(self, filename):
@@ -130,6 +132,14 @@ class Engine:
         return src, dest, mode, file_type
 
     def install_files(self):
+        # ЗАЩИТА: Проверяем, не установлен ли пакет уже, чтобы не затереть живой конфиг случайно
+        current_state = load_state()
+        for pkg in self.active_packages:
+            if pkg in current_state.get("installed_packages", {}):
+                print(f"⚠️ Предупреждение: Пакет '{pkg}' уже развернут в системе!")
+                print(f"👉 Используйте команду 'reinstall' для чистой перезаписи.")
+                return
+
         if self.sys_packages_to_install:
             install_system_dependencies(list(self.sys_packages_to_install))
 
@@ -146,6 +156,7 @@ class Engine:
             
             if f_type == "env":
                 dest = process_env_unit(fname, file_info, dest)
+                self.deployed_file_paths.append(dest) # Фиксируем сгенерированный .env в реестр
                 continue
 
             context_vars = {
@@ -162,6 +173,9 @@ class Engine:
             if src == "NOT_FOUND":
                 print(f"❌ Ошибка: Файл {fname} физически отсутствует на диске!")
                 sys.exit(1)
+
+            # Фиксируем целевой путь файла (или симлинка) для истории в state.json
+            self.deployed_file_paths.append(dest)
 
             if f_type == "symlink":
                 print(f" 🔗 Создание символьной ссылки: {dest} -> {src}")
@@ -194,9 +208,21 @@ class Engine:
             print("\n🔄 Перезагрузка демона systemd (daemon-reload)...")
             subprocess.run(["systemctl", "daemon-reload"])
 
-        # ЭТАП 3: Выполнение пост-инсталл хуков силами инжектированного модуля
         if self.active_packages:
             execute_lifecycle_hooks("post_install", list(self.active_packages), self)
 
+        # ФИНАЛ: Записываем успешную установку всех файлов пакета в state.json
+        for pkg in self.active_packages:
+            register_package_install(pkg, self.deployed_file_paths)
+
         print("\n🎉 Процесс развертывания успешно завершен!")
+
+    def uninstall_package(self, pkg_name):
+        """Метод полной деинсталляции пакета"""
+        self.check_root()
+        # 1. Запускаем пре-унисталл хуки из манифеста, пока файлы еще живы
+        if pkg_name in self.packages:
+            execute_lifecycle_hooks("pre_uninstall", [pkg_name], self)
+        # 2. Вызываем системную зачистку файлов и systemd через state_manager
+        return execute_package_uninstall(pkg_name, self)
 

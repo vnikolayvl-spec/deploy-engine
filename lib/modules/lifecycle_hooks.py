@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Модуль выполнения хуков жизненного цикла (post_install / pre_uninstall).
+Модуль выполнения хуков жизненного цикла пакетов (post_install / pre_uninstall).
 """
 import subprocess
 import sys
@@ -10,7 +10,10 @@ def execute_lifecycle_hooks(hook_type, packages_list, engine):
     Пробегает по списку выбранных пакетов, собирает команды из указанного hook_type 
     (например, 'post_install'), шаблонизирует их и запускает в системе.
     """
-    # Собираем все хуки по порядку для каждого активного пакета
+    if not packages_list:
+        return
+
+    # Сортируем для предсказуемости порядка выполнения
     for pkg_name in sorted(packages_list):
         if pkg_name not in engine.packages:
             continue
@@ -24,7 +27,7 @@ def execute_lifecycle_hooks(hook_type, packages_list, engine):
         print(f"🎬 [ХУК] Выполнение {hook_type} для пакета: {pkg_name.upper()}")
         print("-"*50)
 
-        # Вычисляем контекст путей для конкретного пакета (берем из его первого юнита или дефолт)
+        # Вычисляем контекст путей для конкретного пакета (берем из его первого юнита)
         base_dir = "."
         root_dir = "."
         for fname in pkg_info.get("include", []):
@@ -49,7 +52,7 @@ def execute_lifecycle_hooks(hook_type, packages_list, engine):
 
             print(f" -> Запуск команды: {cmd}")
             try:
-                # Запускаем команду в шелле, перенаправляя вывод для красивого отображения в консоли
+                # Запускаем команду в шелле, перехватывая вывод
                 result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
                 
                 if result.stdout:
@@ -58,7 +61,7 @@ def execute_lifecycle_hooks(hook_type, packages_list, engine):
                     print(f"   [STDERR]:\n{result.stderr.strip()}")
                     
                 if result.returncode != 0:
-                    print(f"❌ Ошибка: Команда завершилась с кодом {result.returncode}. Остановка деплоя.")
+                    print(f"❌ Ошибка: Команда завершилась с кодом {result.returncode}. Остановка процесса.")
                     sys.exit(1)
             except Exception as e:
                 print(f"❌ Критический сбой при выполнении хука: {e}")
