@@ -136,7 +136,7 @@ class DeployApp(App):
                 if not node.is_expanded:
                     node.expand()
                 elif node.children:
-                    tree.select_node(node.children[0])
+                    tree.select_node(node.children)
         elif key_name == "left":
             if node.data.get("is_package") and node.is_expanded:
                 node.collapse()
@@ -230,6 +230,7 @@ class DeployApp(App):
             for pkg in plans[mode]:
                 self.engine.resolve_dependencies(pkg)
                 
+            # ИСПРАВЛЕНО: Теперь ссылаемся строго на self.engine.files_to_deploy
             for fname in sorted(self.engine.files_to_deploy):
                 file_info = self.engine.units.get(fname, {})
                 base_dir = os.path.abspath(file_info.get("base_dir", "."))
@@ -270,5 +271,4 @@ class DeployApp(App):
                 self.query_one("#preview_log").write("[red]❌ План пуст! Выберите действия перед выполнением.[/red]")
                 return
             self.exit(self.actions)
-
 

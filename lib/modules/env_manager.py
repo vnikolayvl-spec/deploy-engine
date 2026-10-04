@@ -1,93 +1,106 @@
 #!/usr/bin/env python3
 import os
 import sys
+import re
 
 def parse_env_file(filepath):
-    """Аккуратно читает существующий .env файл, возвращая словарь ключ-значение"""
+    """Аккуратно читает существующий .env файл в словарь"""
     env_data = {}
     if not os.path.exists(filepath):
         return env_data
-        
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                # Игнорируем комментарии и пустые строки
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, val = line.split("=", 1)
-                # Убираем возможные кавычки вокруг значения
-                val = val.strip().strip('"').strip("'")
-                env_data[key.strip()] = val
+                env_data[key.strip()] = val.strip().strip('"').strip("'")
     except Exception as e:
         print(f"⚠️ Предупреждение: Не удалось прочитать старый файл конфига {filepath}: {e}")
     return env_data
 
-def process_env_unit(fname, file_info, default_dest):
+def process_env_unit(fname, file_info, src, dest):
     """
-    Обрабатывает юнит типа 'env': запрашивает prompt, делает умное слияние 
-    с существующим файлом и перезаписывает его с правами 600.
+    Парсит исходный файл на наличие {{PROMPT:...}}, собирает variables из JSON,
+    делает трехступенчатое слияние (Шаблон -> Сервер -> Промпт) и пишет в dest с правами 600.
     """
-    dest = file_info.get("dest", default_dest)
-    variables_cfg = file_info.get("variables", {})
-    
-    if not variables_cfg:
-        return dest
-
     print("\n" + "-"*50)
-    print(f"🔐 Настройка конфигурационного окружения для: {fname}")
+    print(f"🔐 Настройка окружения для: {fname}")
     print(f"📂 Путь назначения: {dest}")
     print("-"*50)
 
-    # 1. Собираем новые значения на основе манифеста и ввода пользователя
-    computed_vars = {}
-    for key, cfg in variables_cfg.items():
-        # Если переменная объявлена старой плоской строкой, а не объектом
-        if isinstance(cfg, str):
-            val_type = cfg
-            notice = ""
-        else:
-            val_type = cfg.get("value", "")
-            notice = cfg.get("notice", "")
+    # Шаг 1: Подгружаем базовые переменные из шаблона в репозитории (если он есть)
+    final_vars = {}
+    prompt_definitions = {}
 
-        if val_type == "prompt":
-            if notice:
-                print(f"\n💬 [ПОДКАЗКА]: {notice}")
+    if src != "NOT_FOUND" and os.path.exists(src):
+        try:
+            with open(src, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip()
+
+                    # Ищем маркер {{PROMPT:Текст}}
+                    match = re.search(r"\{\{PROMPT:(.*?)\}\}", val)
+                    if match:
+                        prompt_definitions[key] = match.group(1)
+                    else:
+                        final_vars[key] = val.strip('"').strip("'")
+        except Exception as e:
+            print(f"⚠️ Ошибка пре-парсинга шаблона {src}: {e}")
+
+    # Шаг 2: Накатываем старую историю, которая уже была сохранена на сервере
+    existing_vars = parse_env_file(dest)
+    for key, val in existing_vars.items():
+        final_vars[key] = val
+
+    # Шаг 3: Накатываем переменные, жестко зашитые в manifest.json (если есть)
+    variables_cfg = file_info.get("variables", {})
+    for key, cfg in variables_cfg.items():
+        if isinstance(cfg, str):
+            val = cfg
+        else:
+            val = cfg.get("value", "")
+            if cfg.get("notice"):
+                prompt_definitions[key] = cfg.get("notice")
+        
+        if val == "prompt":
+            if key not in prompt_definitions:
+                prompt_definitions[key] = f"Введите значение для {key}"
+        else:
+            final_vars[key] = val
+
+    # Шаг 4: Запускаем интерактивные промпты для незаполненных секретов
+    for key, notice in prompt_definitions.items():
+        # Если переменной нет в истории сервера или манифесте — запрашиваем ввод
+        if key not in final_vars or final_vars[key] == "":
+            print(f"\n💬 [ПОДКАЗКА]: {notice}")
             try:
                 user_input = input(f"👉 Введите значение для {key}: ").strip()
-                computed_vars[key] = user_input
+                final_vars[key] = user_input
             except (KeyboardInterrupt, EOFError):
                 print("\n❌ Ввод отменен пользователем. Выход.")
                 sys.exit(1)
-        else:
-            computed_vars[key] = val_type
 
-    # 2. Читаем старые переменные, которые уже сохранены на сервере
-    existing_vars = parse_env_file(dest)
-
-    # 3. Интеллектуальный Upsert: обновляем старое новыми данными, чужие ключи не трогаем
-    final_vars = existing_vars.copy()
-    for key, val in computed_vars.items():
-        final_vars[key] = val
-
-    # 4. Записываем итоговый результат в песочницу
+    # Шаг 5: Записываем финальный результат в песочницу окружения
     try:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        
-        # Если файл существовал, удаляем его, чтобы сбросить старые небезопасные права
         if os.path.exists(dest):
             os.remove(dest)
             
         with open(dest, "w", encoding="utf-8") as f:
+            f.write("# Автогенерация Deploy Engine. Настройки приложения.\n")
             for key, val in sorted(final_vars.items()):
-                # Записываем в чистом системном формате КЛЮЧ="ЗНАЧЕНИЕ"
                 f.write(f'{key}="{val}"\n')
                 
-        # Намертво закрываем права доступа: только чтение/запись для root
         os.chown(dest, 0, 0)
         os.chmod(dest, 0o600)
-        print(f"✅ Файл конфигурации успешно обновлен и защищен (mode: 600).")
-        
+        print(f"✅ Файл конфигурации успешно скомпилирован (mode: 600).")
     except Exception as e:
         print(f"❌ Ошибка записи конфига в {dest}: {e}")
         sys.exit(1)
