@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Графический интерфейс Multi-Manifest Deployer на базе Textual Tree.
-Поддерживает динамический рендеринг кастомных путей, символьных ссылок (symlinks)
-и отображение статуса [УСТАНОВЛЕН] из реестра состояний state.json.
+Иерархический интерфейс Deployer с трехфлажковой циклической системой действий.
+Управление через Пробел:
+  - Для новых пакетов:    [ ] Ничего -> [+] Установить -> [ ] Ничего
+  - Для установленных:    [ ] Ничего -> [↻] Переустановить -> [-] Удалить -> [ ] Ничего
 """
 import os
 from textual.app import App, ComposeResult
@@ -10,11 +11,10 @@ from textual.widgets import Header, Footer, Tree, Label, Button, RichLog
 from textual.containers import Vertical, Horizontal
 from textual.widgets.tree import TreeNode
 
-# Импортируем загрузчик состояния для фронтенда
 from lib.modules.state_manager import load_state
 
 class DeployApp(App):
-    TITLE = "Independent Hierarchical Deployer"
+    TITLE = "Independent Multi-Action Deployer"
     
     CSS = """
     Screen {
@@ -55,27 +55,27 @@ class DeployApp(App):
     def __init__(self, engine):
         super().__init__()
         self.engine = engine
-        self.selected_states = {}
-        # Подгружаем текущее состояние системы из state.json
+        # Карта запланированных действий: имя_компонента -> action ("install", "reinstall", "uninstall", "none")
+        self.actions = {}
         self.system_state = load_state()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="main_container"):
-            yield Label("Иерархическое дерево пакетов (Пробел — выбрать группу/файл, Enter — развернуть ветку):")
+            yield Label("Управление пакетами: Пробел — Циклическое переключение действий, Стрелки Право/Лево — Раскрыть/Свернуть")
             
-            yield Tree("Проекты инфраструктуры", id="packages_tree")
+            yield Tree("Проекты infrastructure", id="packages_tree")
             
-            yield Label("Карта путей установки выбранных элементов (Рендеринг на лету):")
+            yield Label("Сводный план выполнения операций (Рендеринг на лету):")
             yield RichLog(id="preview_log", highlight=True, markup=True)
             
             with Horizontal():
-                yield Button("Установить", variant="success", id="btn_install")
+                yield Button("Выполнить план", variant="success", id="btn_run")
                 yield Button("Выход", variant="error", id="btn_exit")
         yield Footer()
 
     def on_mount(self) -> None:
-        """Точка старта построения дерева"""
+        """Точка старта построения дерева веток"""
         tree = self.query_one("#packages_tree")
         tree.root.expand()
         tree.focus()
@@ -85,20 +85,23 @@ class DeployApp(App):
             for item in p_info.get("include", []):
                 all_includes.add(item)
                 
-        for p_name in self.engine.packages: self.selected_states[p_name] = False
-        for u_name in self.engine.units: self.selected_states[u_name] = False
+        # Инициализируем действия по умолчанию для всех элементов
+        for p_name in self.engine.packages: self.actions[p_name] = "none"
+        for u_name in self.engine.units: self.actions[u_name] = "none"
 
+        # 1. Рекурсивно строим дерево с независимых корневых пакетов
         for p_name in sorted(self.engine.packages.keys()):
             if p_name not in all_includes:
                 self._build_tree_recursive(tree.root, p_name)
 
+        # 2. Добавляем файлы, которые вообще не входят в пакеты (сироты)
         for u_name in sorted(self.engine.units.keys()):
             if u_name not in all_includes:
                 desc = self.engine.units[u_name].get("desc", "Без описания")
                 label = f"[ ] 📄 Одиночный файл: {u_name} ({desc})"
                 tree.root.add(label, data={"key": u_name, "is_package": False})
 
-        self.query_one("#preview_log").write("[yellow]Используйте ПРОБЕЛ для выбора пакетов в дереве...[/yellow]")
+        self.render_live_preview()
 
     def _build_tree_recursive(self, parent_node: TreeNode, item_name: str):
         """Рекурсивно строит дерево с подсветкой установленных пакетов"""
@@ -107,7 +110,7 @@ class DeployApp(App):
         if item_name in self.engine.packages:
             p_info = self.engine.packages[item_name]
             
-            # ФИЧА 1: Если пакет найден в state.json, подсвечиваем его зелёным и добавляем статус
+            # Если пакет найден в state.json, красим его зеленым
             if item_name in installed_packages:
                 label = f"[ ] [bold green]🎁 Пакет: {item_name} [УСТАНОВЛЕН][/bold green] ({p_info.get('desc', '')})"
             else:
@@ -122,25 +125,8 @@ class DeployApp(App):
             label = f"[ ] {icon} {item_name} ({u_info.get('desc', '')})"
             parent_node.add(label, data={"key": item_name, "is_package": False})
 
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        """ФИЧА 2: Динамическое изменение текста кнопки Установить/Переустановить при наведении"""
-        node = event.node
-        btn = self.query_one("#btn_install")
-        installed_packages = self.system_state.get("installed_packages", {})
-
-        if node and node.data:
-            key = node.data["key"]
-            # Если курсор стоит на пакете, который уже развернут в системе
-            if node.data.get("is_package") and key in installed_packages:
-                btn.label = "Переустановить"
-                btn.variant = "warning"  # Меняем цвет кнопки на оранжевый/предупреждающий
-                return
-
-        # Для всех остальных новых элементов возвращаем стандартный режим
-        btn.label = "Установить"
-        btn.variant = "success"
-
     def handle_left_right_keys(self, key_name: str) -> None:
+        """Нативная навигация стрелками Вправо/Влево по уровням иерархии"""
         tree = self.query_one("#packages_tree")
         node = tree.cursor_node
         if not node or not node.data: return
@@ -159,74 +145,113 @@ class DeployApp(App):
                     tree.select_node(node.parent)
 
     def handle_space_press(self) -> None:
+        """Переключает статус действия для текущего пакета по кругу через Пробел"""
         tree = self.query_one("#packages_tree")
         node = tree.cursor_node
-        if not node or not node.data: return
+        if not node or not node.data or not node.data.get("is_package"):
+            return # Ограничиваем циклы только пакетами для предсказуемости
             
         key = node.data["key"]
-        new_state = not self.selected_states.get(key, False)
-        self._toggle_node_and_children(node, new_state)
+        current_action = self.actions.get(key, "none")
+        installed_packages = self.system_state.get("installed_packages", {})
+
+        # ВЫЧИСЛЯЕМ СЛЕДУЮЩЕЕ СОСТОЯНИЕ В ЦИКЛЕ
+        if key in installed_packages:
+            # Для установленных: none -> reinstall -> uninstall -> none
+            if current_action == "none": next_action = "reinstall"
+            elif current_action == "reinstall": next_action = "uninstall"
+            else: next_action = "none"
+        else:
+            # Для новых: none -> install -> none
+            if current_action == "none": next_action = "install"
+            else: next_action = "none"
+
+        # Запускаем каскадный спуск вниз по дочерним веткам
+        self._set_action_recursive(node, next_action)
         self.render_live_preview()
 
-    def _toggle_node_and_children(self, node: TreeNode, state: bool):
+    def _set_action_recursive(self, node: TreeNode, action_type: str):
+        """Рекурсивно меняет текстовые маркеры и наполняет карту действий"""
         if not node.data: return
         key = node.data["key"]
-        self.selected_states[key] = state
         
+        installed_packages = self.system_state.get("installed_packages", {})
+        # Защита: нельзя снести или переустановить пакет, которого нет в state.json
+        if action_type in ["uninstall", "reinstall"] and key not in installed_packages and node.data.get("is_package"):
+            return
+
+        self.actions[key] = action_type
+        
+        # Подбираем визуальный маркер
+        marker = "[ ]"
+        if action_type == "install": marker = "[+]"
+        elif action_type == "reinstall": marker = "[↻]"
+        elif action_type == "uninstall": marker = "[-]"
+
         current_label = str(node.label)
-        if "[ ]" in current_label or "[X]" in current_label:
-            # Учитываем, что внутри строки могут быть теги разметки стилей Textual
-            new_prefix = "[X]" if state else "[ ]"
-            node.label = current_label.replace("[ ]", new_prefix).replace("[X]", new_prefix)
+        for old_m in ["[ ]", "[+]", "[↻]", "[-]"]:
+            if current_label.startswith(old_m):
+                node.label = f"{marker}{current_label[3:]}"
+                break
             
         for child in node.children:
-            self._toggle_node_and_children(child, state)
+            self._set_action_recursive(child, action_type)
 
     def render_live_preview(self) -> None:
-        """Интеллектуальный рендеринг путей и симлинков на лету для TUI лога"""
+        """Группирует действия по трем секциям в нижнем окне логов на лету"""
         log = self.query_one("#preview_log")
         log.clear()
         
-        active_targets = [k for k, v in self.selected_states.items() if v]
-        if not active_targets:
-            log.write("[yellow]Используйте ПРОБЕЛ для выбора пакетов в дереве...[/yellow]")
+        plans = {"install": set(), "reinstall": set(), "uninstall": set()}
+        for k, v in self.actions.items():
+            if v in plans: plans[v].add(k)
+            
+        if not plans["install"] and not plans["reinstall"] and not plans["uninstall"]:
+            log.write("[yellow]Используйте ПРОБЕЛ на пакетах для планирования операций...[/yellow]")
             return
 
-        self.engine.files_to_deploy.clear()
-        for target in active_targets:
-            self.engine.resolve_dependencies(target)
-
         import deploy_config as config
-        log.write(f"[bold green]Будет обработано элементов: {len(self.engine.files_to_deploy)}[/bold green]\n" + "-"*50)
         
-        for fname in sorted(self.engine.files_to_deploy):
-            file_info = self.engine.units.get(fname, {})
-            base_dir = os.path.abspath(file_info.get("base_dir", "."))
-            root_dir = os.path.abspath(file_info.get("root_dir", "."))
-            
-            src, dest, mode, f_type = self.engine.get_paths_and_modes(fname)
-            desc = file_info.get("desc", "")
-            
-            context_vars = {
-                "{{ROOT_DIR}}": root_dir,
-                "{{BASE_DIR}}": base_dir,
-                "{{SYS_BIN}}": config.SYS_BIN,
-                "{{SYS_SYSTEMD}}": config.SYS_SYSTEMD
-            }
-            for marker, real_value in context_vars.items():
-                if src != "NOT_FOUND": src = src.replace(marker, real_value)
-                dest = dest.replace(marker, real_value)
+        # Секция 1: Удаление
+        if plans["uninstall"]:
+            log.write("[bold red]🚨 ПЛАН УДАЛЕНИЯ ПАКЕТОВ (ЭТАП 1):[/bold red]")
+            for pkg in sorted(plans["uninstall"]):
+                log.write(f"  [-] Пакет [bold]{pkg}[/bold] будет полностью стерт из системы")
 
-            if f_type == "symlink":
-                log.write(f"🔗 [bold magenta][СИМЛИНК][/bold magenta] [bold]{fname}[/bold] ({desc})")
-                log.write(f"   [cyan]Ярлык:[/cyan]  {dest}")
-                log.write(f"   [cyan]Указывает на:[/cyan] {src}")
-            else:
-                if src == "NOT_FOUND":
-                    log.write(f"[red]❌ ОШИБКА: Файл {fname} отсутствует на диске пакетов![/red]")
+        # Секция 2 и 3: Переустановка и Установка
+        for mode in ["reinstall", "install"]:
+            if not plans[mode]: continue
+            title = "🔄 ПЛАН ПОЛНОЙ ПЕРЕУСТАНОВКИ (ЭТАП 2):" if mode == "reinstall" else "🎁 ПЛАН УСТАНОВКИ НОВЫХ ПАКЕТОВ (ЭТАП 3):"
+            color = "yellow" if mode == "reinstall" else "green"
+            
+            log.write(f"\n[bold {color}]{title}[/bold {color}]")
+            
+            self.engine.files_to_deploy.clear()
+            for pkg in plans[mode]:
+                self.engine.resolve_dependencies(pkg)
+                
+            for fname in sorted(self.engine.files_to_deploy):
+                file_info = self.engine.units.get(fname, {})
+                base_dir = os.path.abspath(file_info.get("base_dir", "."))
+                root_dir = os.path.abspath(file_info.get("root_dir", "."))
+                
+                src, dest, mode_mask, f_type = self.engine.get_paths_and_modes(fname)
+                desc = file_info.get("desc", "")
+                
+                context_vars = {
+                    "{{ROOT_DIR}}": root_dir,
+                    "{{BASE_DIR}}": base_dir,
+                    "{{SYS_BIN}}": config.SYS_BIN,
+                    "{{SYS_SYSTEMD}}": config.SYS_SYSTEMD
+                }
+                for marker, real_value in context_vars.items():
+                    if src != "NOT_FOUND": src = src.replace(marker, real_value)
+                    dest = dest.replace(marker, real_value)
+                    
+                if f_type == "symlink":
+                    log.write(f"   🔗 [Симлинк] {fname} ({desc}) -> {dest}")
                 else:
-                    log.write(f"🔹 [bold]{fname}[/bold] ({desc})")
-                    log.write(f"   [cyan]Куда:[/cyan]  {dest} | [cyan]Права:[/cyan] {oct(mode)[2:]}")
+                    log.write(f"   🔹 [Файл]    {fname} ({desc}) -> {dest}")
 
     def on_key(self, event) -> None:
         if event.key == "space":
@@ -239,9 +264,11 @@ class DeployApp(App):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_exit":
             self.exit()
-        elif event.button.id == "btn_install":
-            active_targets = [k for k, v in self.selected_states.items() if v]
+        elif event.button.id == "btn_run":
+            active_targets = {k: v for k, v in self.actions.items() if v != "none"}
             if not active_targets:
-                self.query_one("#preview_log").write("[red]❌ Ничего не выбрано для операции![/red]")
-        return
-    self.exit(active_targets)
+                self.query_one("#preview_log").write("[red]❌ План пуст! Выберите действия перед выполнением.[/red]")
+                return
+            self.exit(self.actions)
+
+

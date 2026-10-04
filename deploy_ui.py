@@ -2,6 +2,7 @@
 import sys
 import os
 
+# Перенаправляем в CLI режим, если аргументов много
 if len(sys.argv) > 2:
     os.execv(sys.executable, [sys.executable, "./deploy.py"] + sys.argv[1:])
 
@@ -20,6 +21,7 @@ from lib.ui_app import DeployApp
 from lib.modules.state_manager import load_state
 
 if __name__ == "__main__":
+    # Исправление: Проверяем расширение у конкретного аргумента-строки, а не у списка argv
     manifest_arg = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].endswith('.json') else None
     
     engine = Engine()
@@ -29,25 +31,38 @@ if __name__ == "__main__":
         engine.load_default_manifests()
     
     app = DeployApp(engine)
-    selected_components = app.run()
+    actions_plan = app.run()
     
-    if selected_components:
-        current_state = load_state()
-        
-        for target in selected_components:
+    if actions_plan and isinstance(actions_plan, dict):
+        # ФИЛЬТР: Распределяем задачи СТРОГО для пакетов, игнорируя отдельные файлы-листья
+        to_uninstall = [k for k, v in actions_plan.items() if v == "uninstall" and k in engine.packages]
+        to_reinstall = [k for k, v in actions_plan.items() if v == "reinstall" and k in engine.packages]
+        to_install = [k for k, v in actions_plan.items() if v == "install" and k in engine.packages]
+
+        # ЭТАП 1: Массовое удаление помеченных пакетов [-]
+        for pkg in to_uninstall:
+            engine.uninstall_package(pkg)
+
+        # ЭТАП 2: Массовая чистая переустановка пакетов [↻]
+        for pkg in to_reinstall:
+            print(f"\n🔄 TUI: Запуск переустановки пакета: {pkg.upper()}")
+            engine.uninstall_package(pkg)
+            
             engine.files_to_deploy.clear()
             engine.active_packages.clear()
             engine.deployed_file_paths.clear()
             
-            if target in current_state.get("installed_packages", {}):
-                print(f"\n🔄 TUI: Запуск переустановки активного пакета: {target.upper()}")
-                engine.uninstall_package(target)
-                
-                engine.resolve_dependencies(target)
-                if engine.files_to_deploy:
-                    engine.install_files()
-            else:
-                engine.resolve_dependencies(target)
-                if engine.files_to_deploy:
-                    engine.install_files()
+            engine.resolve_dependencies(pkg)
+            if engine.files_to_deploy:
+                engine.install_files()
+
+        # ЭТАП 3: Накатка новых чистых пакетов [X]
+        for pkg in to_install:
+            engine.files_to_deploy.clear()
+            engine.active_packages.clear()
+            engine.deployed_file_paths.clear()
+            
+            engine.resolve_dependencies(pkg)
+            if engine.files_to_deploy:
+                engine.install_files()
 
