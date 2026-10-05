@@ -44,8 +44,8 @@ def get_paths_and_modes(engine, filename):
     elif file_type == "script" or filename.endswith(('.sh', '.py')):
         dest = os.path.join(config.SYS_BIN, os.path.basename(filename))
     else:
-        # ТИП FILE: по умолчанию зеркально летит в /etc/de_{имя_пакета}/files/[имя_файла]
-        dest = os.path.join("/etc", f"de_{engine.active_package_context}", "files", filename)
+        # ТИП FILE: по умолчанию зеркально летит в /opt/de_{имя_пакета}/files/[имя_файла]
+        dest = os.path.join("/opt", f"de_{engine.active_package_context}", "files", filename)
 
     # 2. Вычисление прав доступа по умолчанию (mode)
     if "mode" in file_info:

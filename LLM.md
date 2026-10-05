@@ -52,7 +52,7 @@ If a manifest unit omits a definitive `"dest"` attribute, route targets are comp
 * `unit` / `service` / `timer` ➔ `config.SYS_SYSTEMD / [basename]` (mode: `644`)
 * `script` / `.sh` / `.py` ➔ `config.SYS_BIN / [basename]` (mode: `755`)
 * `env` ➔ `config.ENV_PATH / config.ENV_PREFIX{package_name} / [basename|env]` (mode: `600`)
-* `file` (Default fallback type) ➔ `/etc/de_{package_name}/files/ / [relative_path]` (mode: `644`)
+* `file` (Default fallback type) ➔ `/opt/de_{package_name}/files/ / [relative_path]` (mode: `644`)
 
 ### 3. Three-Stage Secret Merging Sequence
 When processing units with the `env` descriptor, compiled states must be merged linearly into the `dest` sandbox layout:
@@ -66,7 +66,7 @@ Every successful installation pipeline must dump an environment descriptor conta
 SCRIPTS=("/usr/local/bin/sample.py")
 TIMERS=()
 UNITS=("/etc/systemd/system/sample.service")
-FILES=("/etc/de_sample-pkg/files/config.json")
+FILES=("/opt/de_sample-pkg/files/config.json")
 ```
 
 ---
