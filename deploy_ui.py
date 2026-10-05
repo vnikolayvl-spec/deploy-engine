@@ -18,15 +18,14 @@ bootstrap_gui()
 
 from lib.engine import Engine
 from lib.ui_app import DeployApp
-from lib.modules.state_manager import load_state
 
 if __name__ == "__main__":
-    # Исправление: Проверяем расширение у конкретного аргумента-строки, а не у списка argv
-    manifest_arg = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].endswith('.json') else None
+    # Проверяем расширение у конкретного аргумента-строки, а не у списка argv
+    manifest_arg = sys.argv if len(sys.argv) > 1 and sys.argv[1].endswith('.json') else None
     
     engine = Engine()
     if manifest_arg:
-        engine.load_manifest_recursive(manifest_arg)
+        engine.load_manifest_recursive(manifest_arg[1])
     else:
         engine.load_default_manifests()
     
@@ -50,7 +49,7 @@ if __name__ == "__main__":
             
             engine.files_to_deploy.clear()
             engine.active_packages.clear()
-            engine.deployed_file_paths.clear()
+            engine.deployed_files_map.clear()  # Исправлено
             
             engine.resolve_dependencies(pkg)
             if engine.files_to_deploy:
@@ -60,7 +59,7 @@ if __name__ == "__main__":
         for pkg in to_install:
             engine.files_to_deploy.clear()
             engine.active_packages.clear()
-            engine.deployed_file_paths.clear()
+            engine.deployed_files_map.clear()  # Исправлено
             
             engine.resolve_dependencies(pkg)
             if engine.files_to_deploy:
