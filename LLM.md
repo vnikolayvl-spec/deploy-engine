@@ -69,6 +69,75 @@ UNITS=("/etc/systemd/system/sample.service")
 FILES=("/opt/de_sample-pkg/files/config.json")
 ```
 
+### 5. Manifest Declarative Blueprint (`manifest.json` Specification)
+When generating, validating, or parsing a package declaration, the engine and AI sub-routines must adhere to this dual-node JSON schema:
+*   **The `"packages"` Node**: Contains logical meta-packages. It aggregates high-level human descriptions (`desc`), native OS requirements (`sys_packages`), installation inclusions (`include`), and sequential post-deployment execution commands (`post_install`).
+*   **The `"units"` Node**: Contains the absolute definition for every resource declared in the `include` arrays. Each entity must specify an operational `type` and an optional explicit location override.
+
+### 6. Declarative Unit Typings & Pipeline Execution Rules
+The deployment pipeline (`file_installer.py`) modifies its execution loop, permission allocation, and I/O handlers based strictly on the declared unit `type`:
+*   `type: "script"`: Automatically bound to `{{SYS_BIN}}` with executable permissions set to `0o755`.
+*   `type: "unit"` / `type: "service"`: Bound to `{{SYS_SYSTEMD}}` with permissions set to `0o644`. Automatically queues `systemctl daemon-reload` and schedules `systemctl enable` hooks during orchestration.
+*   `type: "file"`: **Recursive Multi-Target Processor**. Supports copying individual assets as well as whole directories. 
+    *   *Special-File Isolation Rule*: The copying loop must utilize low-level file stat mask validation (`os.lstat().st_mode` paired with `stat.S_ISSOCK` and `stat.S_ISFIFO`). Any transient UNIX sockets (`.sock`) or named pipes (`FIFO`) found within source trees must be silently skipped to prevent I/O hanging and descriptor locks.
+*   `type: "env"`: Triggers the 3-stage interactive secret compilation sequence. Reads templates via regular expressions, isolates inputs inside `/dev/tty` loops for TUI safety, merges live states to maintain persistence, and enforces highly restricted `0o600` permissions under `root:root` ownership.
+
+### 7. Explicit Destination Precedence & Macro Expansion Token Rules
+The path resolution layer executes two hard constraints before data hits the file system:
+1.  **Explicit Target Override**: If a unit definition contains a `"dest"` attribute, the engine completely bypasses the default destination route conventions (FHS Fallbacks) and forces delivery to that exact absolute path.
+2.  **Context Macro Expansion**: The following bracketed tokens must be dynamically expanded across all `src` and `dest` attributes prior to running installation blocks:
+    *   `{{ROOT_DIR}}` — The global engine runtime directory.
+    *   `{{BASE_DIR}}` — The absolute physical path of the directory hosting the active `manifest.json`.
+    *   `{{SYS_BIN}}` — Standardized system binary folder pulled from `deploy_config.py`.
+    *   `{{SYS_SYSTEMD}}` — Systemd service unit storage folder.
+
+### 8. Gold-Master Reference Manifest Structure
+When asked to output or generate an engine-compliant manifest, use this precise blueprint:
+```json
+{
+  "packages": {
+    "sample-service": {
+      "desc": "Universal daemon meta-package with recursive codebases and templated environment injection",
+      "sys_packages": [
+        "python3",
+        "python3-pip"
+      ],
+      "include": [
+        "launcher.sh",
+        "service.service",
+        "production.env",
+        "src_code"
+      ],
+      "post_install": [
+        "systemctl daemon-reload",
+        "systemctl enable service.service",
+        "systemctl start service.service"
+      ]
+    }
+  },
+  "units": {
+    "launcher.sh": {
+      "type": "script",
+      "desc": "Executable entrypoint wrapper script"
+    },
+    "service.service": {
+      "type": "unit",
+      "desc": "Systemd background daemon unit file"
+    },
+    "production.env": {
+      "type": "env",
+      "desc": "Interactive configuration template with token prompt markers",
+      "dest": "/etc/default/de_sample/app.env"
+    },
+    "src_code": {
+      "type": "file",
+      "desc": "Core python package directory copied recursively with structural filtering",
+      "dest": "/opt/de_sample/src_code"
+    }
+  }
+}
+```
+
 ---
 
 ## 🚨 Mandatory AI Code Modification Rules

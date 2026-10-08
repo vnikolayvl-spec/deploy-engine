@@ -4,6 +4,7 @@
 """
 import os
 import sys
+import stat
 import shutil
 import subprocess
 import deploy_config as config
@@ -39,8 +40,16 @@ def run_deployment_pipeline(engine):
         file_info = engine.units.get(fname, {})
         base_dir = os.path.abspath(file_info.get("base_dir", "."))
         root_dir = os.path.abspath(file_info.get("root_dir", "."))
-        
+
         src, dest, mode, f_type = engine.get_paths_and_modes(fname)
+
+        # Если движок вернул пустой src или относительный путь, 
+        # привязываем его к базовой директории манифеста (base_dir)
+        if not src or src == "NOT_FOUND":
+            potential_src = os.path.join(base_dir, fname)
+            if os.path.exists(potential_src):
+                src = potential_src
+
         
         # Сборка словаря контекстных переменных
         context_vars = {
@@ -79,19 +88,47 @@ def run_deployment_pipeline(engine):
             continue
 
         # Копирование и шаблонизация текстовых файлов
-        print(f" -> Обработка и копирование: {fname} ==> {dest}")
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        # Разделение логики: Копирование целой директории VS атомарный файл
+        if os.path.isdir(src):
+            print(f" 📂 Рекурсивное копирование директории: {fname} ==> {dest}")
+            if os.path.exists(dest):
+                if os.path.islink(dest):
+                    os.remove(dest)
+                else:
+                    shutil.rmtree(dest)
+            # Фильтруем сокеты и специальные файлы, чтобы shutil не падал при копировании
+            def ignore_special_files(dir_path, list_of_names):
+                ignored = []
+                for name in list_of_names:
+                    full_path = os.path.join(dir_path, name)
+                    try:
+                        # Получаем битовую маску свойств файла без перехода по симлинкам
+                        mode = os.lstat(full_path).st_mode
+                        # Проверяем, сокет ли это или FIFO канал
+                        if stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode):
+                            ignored.append(name)
+                    except OSError:
+                        # Если файл исчез в процессе или недоступен, пропускаем
+                        pass
+                return ignored
 
-        try:
-            with open(src, "r", encoding="utf-8") as f_src:
-                content = f_src.read()
-            for marker, real_value in context_vars.items():
-                content = content.replace(marker, real_value)
-            with open(dest, "w", encoding="utf-8") as f_dest:
-                f_dest.write(content)
-        except UnicodeDecodeError:
-            # Если файл бинарный — копируем напрямую без декодирования строки
-            shutil.copy2(src, dest)
+            shutil.copytree(src, dest, symlinks=True, ignore=ignore_special_files)
+
+        else:
+            print(f" -> Обработка и копирование файла: {fname} ==> {dest}")
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+
+            try:
+                with open(src, "r", encoding="utf-8") as f_src:
+                    content = f_src.read()
+                for marker, real_value in context_vars.items():
+                    content = content.replace(marker, real_value)
+                with open(dest, "w", encoding="utf-8") as f_dest:
+                    f_dest.write(content)
+            except UnicodeDecodeError:
+                # Если файл бинарный — копируем напрямую без декодирования строки
+                shutil.copy2(src, dest)
+
 
         # Выставляем владельца root:root и права доступа
         os.chown(dest, 0, 0)
