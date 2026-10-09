@@ -43,13 +43,17 @@ def run_deployment_pipeline(engine):
 
         src, dest, mode, f_type = engine.get_paths_and_modes(fname)
 
-        # Если движок вернул пустой src или относительный путь, 
-        # привязываем его к базовой директории манифеста (base_dir)
+        # Если движок вернул пустой src или относительный путь,
+        # привязываем его к базовой директории манифеста (base_dir), отсекая неймспейс
         if not src or src == "NOT_FOUND":
-            potential_src = os.path.join(base_dir, fname)
+            clean_fname = fname.split(":")[-1]
+            potential_src = os.path.join(base_dir, clean_fname)
             if os.path.exists(potential_src):
                 src = potential_src
 
+        # ПРИНУДИТЕЛЬНЫЙ ПЕРЕГРУЗ DEST: Если в манифесте жестко задан целевой путь — приоритет ему
+        if file_info.get("dest"):
+            dest = file_info.get("dest")
         
         # Сборка словаря контекстных переменных
         context_vars = {
@@ -90,7 +94,7 @@ def run_deployment_pipeline(engine):
         # Копирование и шаблонизация текстовых файлов
         # Разделение логики: Копирование целой директории VS атомарный файл
         if os.path.isdir(src):
-            print(f" 📂 Рекурсивное копирование директории: {fname} ==> {dest}")
+            print(f" 📂 Рекурсивное копирование директории: {fname.split(':')[-1]} ==> {dest}")
             if os.path.exists(dest):
                 if os.path.islink(dest):
                     os.remove(dest)
