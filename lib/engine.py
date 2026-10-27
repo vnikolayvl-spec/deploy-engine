@@ -70,3 +70,4 @@ class Engine:
         # Вызываем системную зачистку файлов и песочниц через state_manager
         return execute_package_uninstall(pkg_name, self)
 
+

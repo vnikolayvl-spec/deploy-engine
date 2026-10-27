@@ -25,7 +25,7 @@ def run_deployment_pipeline(engine):
         if pkg in current_state.get("installed_packages", {}):
             print(f"⚠️ Предупреждение: Пакет '{pkg}' уже развернут в системе!")
             print(f"👉 Используйте команду 'reinstall' для чистой перезаписи.")
-            return
+            return False
 
     # 2. ЭТАП 1: Установка системных APT/YUM зависимостей
     if engine.sys_packages_to_install:
