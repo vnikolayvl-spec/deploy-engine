@@ -135,15 +135,26 @@ def run_deployment_pipeline(engine):
 
 
         # Выставляем владельца root:root и права доступа
-        os.chown(dest, 0, 0)
-        os.chmod(dest, mode)
+        try:
+            os.chown(dest, 0, 0)
+        except Exception:
+            pass
+        try:
+            os.chmod(dest, mode)
+        except Exception:
+            pass
         
-        # Регистрация служб в автозагрузку ОС Linux
+        # Регистрация служб в автозагрузку ОС Linux (если поддерживается systemd)
         if f_type in ["unit", "service", "timer"] or dest.startswith(config.SYS_SYSTEMD):
-            subprocess.run(["systemctl", "enable", fname], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            engine.need_systemd_reload = True
+            if shutil.which("systemctl"):
+                subprocess.run(["systemctl", "enable", fname], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                engine.need_systemd_reload = True
+            else:
+                print(f"ℹ️ [systemd] systemctl не обнаружен. Служба '{fname}' скопирована без активации в systemd.")
             
-    if engine.need_systemd_reload:
+    if engine.need_systemd_reload and shutil.which("systemctl"):
         print("\n🔄 Перезагрузка демона systemd (daemon-reload)...")
         subprocess.run(["systemctl", "daemon-reload"])
+
+
 

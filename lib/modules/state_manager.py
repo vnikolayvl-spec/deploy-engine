@@ -30,8 +30,14 @@ def save_state(state_data):
         if os.path.exists(state_file): os.remove(state_file)
         with open(state_file, "w", encoding="utf-8") as f:
             json.dump(state_data, f, indent=2, ensure_ascii=False)
-        os.chown(state_file, 0, 0)
-        os.chmod(state_file, 0o600)
+        try:
+            os.chown(state_file, 0, 0)
+        except Exception:
+            pass
+        try:
+            os.chmod(state_file, 0o600)
+        except Exception:
+            pass
     except Exception as e:
         print(f"❌ Ошибка записи state.json: {e}"); sys.exit(1)
 
@@ -64,8 +70,14 @@ def generate_pack_env(pkg_name, files_map):
             f.write(f"UNITS=({' '.join(units)})\n")
             f.write(f"FILES=({' '.join(files)})\n")
             
-        os.chown(pack_env_path, 0, 0)
-        os.chmod(pack_env_path, 0o600)
+        try:
+            os.chown(pack_env_path, 0, 0)
+        except Exception:
+            pass
+        try:
+            os.chmod(pack_env_path, 0o600)
+        except Exception:
+            pass
         print(f"📝 Паспорт пакета успешно сгенерирован по пути: {pack_env_path}")
     except Exception as e:
         print(f"⚠️ Ошибка автогенерации pack.env: {e}")
@@ -97,11 +109,14 @@ def execute_package_uninstall(pkg_name, engine):
     print(f"🧹 СИСТЕМНАЯ ЗАЧИСТКА ПАКЕТА: {pkg_name.upper()}")
     print("="*50)
 
-    # 1. Глушим службы systemd
+    # 1. Глушим службы systemd (только если доступен systemctl в ОС)
     services_to_disable = [os.path.basename(f) for f in files_to_remove if f.startswith(config.SYS_SYSTEMD)]
     if services_to_disable:
-        for svc in sorted(services_to_disable):
-            subprocess.run(["systemctl", "disable", "--now", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if shutil.which("systemctl"):
+            for svc in sorted(services_to_disable):
+                subprocess.run(["systemctl", "disable", "--now", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            print("ℹ️ [systemd] systemctl не обнаружен. Пропуск отключения служб.")
 
     # 2. Удаляем файлы и симлинки
     for filepath in sorted(files_to_remove):
@@ -117,7 +132,12 @@ def execute_package_uninstall(pkg_name, engine):
 
     del state_data["installed_packages"][pkg_name]
     save_state(state_data)
-    subprocess.run(["systemctl", "daemon-reload"])
-    print(f"🎉 Пакет '{pkg_name}' полностью удален из Linux!")
+    
+    # 4. Перезагружаем демон systemd, если он поддерживается
+    if shutil.which("systemctl"):
+        subprocess.run(["systemctl", "daemon-reload"])
+    
+    print(f"🎉 Пакет '{pkg_name}' полностью удален из системы!")
     return True
+
 

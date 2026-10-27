@@ -23,14 +23,17 @@ def bootstrap_gui():
             try:
                 subprocess.run([sys.executable, "-m", "venv", config.VENV_PATH], check=True)
             except subprocess.CalledProcessError:
-                subprocess.run(["apt-get", "update"])
-                subprocess.run(["apt-get", "install", "-y", "python3-venv", "python3-pip"])
+                if shutil.which("apt-get"):
+                    subprocess.run(["apt-get", "update"])
+                    subprocess.run(["apt-get", "install", "-y", "python3-venv", "python3-pip"])
                 subprocess.run([sys.executable, "-m", "venv", config.VENV_PATH], check=True)
             
         venv_python = os.path.join(config.VENV_PATH, "bin", "python")
         print("📥 Доставка графической библиотеки Textual...")
-        subprocess.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"], stdout=subprocess.DEVNULL)
-        subprocess.run([venv_python, "-m", "pip", "install", "textual-dev"], stdout=subprocess.DEVNULL)
+        subprocess.run([venv_python, "-m", "pip", "install", "--no-cache-dir", "--upgrade", "pip"], stdout=subprocess.DEVNULL)
+        subprocess.run([venv_python, "-m", "pip", "install", "--no-cache-dir", "textual-dev"], stdout=subprocess.DEVNULL)
         
         print("🚀 Запуск графического интерфейса...")
         os.execv(venv_python, [venv_python] + sys.argv)
+
+
