@@ -67,3 +67,4 @@ def execute_lifecycle_hooks(hook_type, packages_list, engine):
                 print(f"❌ Критический сбой при выполнении хука: {e}")
                 sys.exit(1)
 
+
