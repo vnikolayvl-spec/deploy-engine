@@ -52,19 +52,12 @@ def execute_lifecycle_hooks(hook_type, packages_list, engine):
 
             print(f" -> Запуск команды: {cmd}")
             try:
-                # Запускаем команду в шелле, перехватывая вывод
-                result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
-                
-                if result.stdout:
-                    print(f"   [STDOUT]:\n{result.stdout.strip()}")
-                if result.stderr:
-                    print(f"   [STDERR]:\n{result.stderr.strip()}")
-                    
+                # Запускаем команду с прямым выводом в терминал в реальном времени (поддерживает интерактивный ввод)
+                result = subprocess.run(cmd, shell=True)
                 if result.returncode != 0:
                     print(f"❌ Ошибка: Команда завершилась с кодом {result.returncode}. Остановка процесса.")
                     sys.exit(1)
             except Exception as e:
                 print(f"❌ Критический сбой при выполнении хука: {e}")
                 sys.exit(1)
-
 

@@ -63,3 +63,4 @@ def bootstrap_gui():
         
         print("🚀 Запуск графического интерфейса...")
         os.execv(venv_python, [venv_python] + sys.argv)
+
