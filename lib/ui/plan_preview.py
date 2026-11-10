@@ -43,18 +43,25 @@ class PlanPreviewLog(RichLog):
             
             # Временно наполняем стек файлов движка для просчета путей этой группы
             self.engine.files_to_deploy.clear()
-            for pkg in plans[mode]:
-                self.engine.resolve_dependencies(pkg)
+            for pkg in sorted(plans[mode]):
+                try:
+                    if hasattr(self.engine, "registry") and self.engine.registry.has(pkg):
+                        self.engine.resolve_dependencies(pkg)
+                    elif pkg in getattr(self.engine, "packages", {}):
+                        self.engine.resolve_dependencies(pkg)
+                except Exception as err:
+                    self.write(f"  ⚠️ [red]Ошибка зависимостей для {pkg}: {err}[/red]")
                 
             for fname in sorted(self.engine.files_to_deploy):
-                file_info = self.engine.units.get(fname, {})
-                base_dir = os.path.abspath(file_info.get("base_dir", "."))
-                root_dir = os.path.abspath(file_info.get("root_dir", "."))
+                pkg_name, unit_name = fname.split(":", 1) if ":" in fname else ("", fname)
+                pkg = self.engine.registry.get(pkg_name) if pkg_name and hasattr(self.engine, "registry") and self.engine.registry.has(pkg_name) else {}
+                file_info = pkg.get("units", {}).get(unit_name, {}) if pkg else self.engine.units.get(unit_name, {})
+                base_dir = os.path.abspath(pkg.get("base_dir", ".")) if pkg else os.path.abspath(file_info.get("base_dir", "."))
+                root_dir = os.path.abspath(pkg.get("root_dir", base_dir)) if pkg else os.path.abspath(file_info.get("root_dir", "."))
                 
                 src, dest, mode_mask, f_type = self.engine.get_paths_and_modes(fname)
-                desc = file_info.get("desc", "")
+                desc = file_info.get("desc") or file_info.get("description", "")
                 
-                # Эмулируем шаблонизатор путей движка для вывода на экран реальных системных адресов
                 context_vars = {
                     "{{ROOT_DIR}}": root_dir,
                     "{{BASE_DIR}}": base_dir,
@@ -67,7 +74,18 @@ class PlanPreviewLog(RichLog):
                     dest = dest.replace(marker, real_value)
                     
                 if f_type == "symlink":
-                    self.write(f"   🔗 [Симлинк] {fname} ({desc}) -> {dest}")
+                    icon_str = "🔗 [Симлинк]"
+                elif f_type == "env":
+                    icon_str = "🔐 [ENV]    "
+                elif f_type in ["unit", "service"]:
+                    icon_str = "⚙️ [Служба] "
+                elif f_type == "timer":
+                    icon_str = "⏱️ [Таймер] "
+                elif f_type == "script":
+                    icon_str = "📜 [Скрипт] "
                 else:
-                    self.write(f"   🔹 [Файл]    {fname} ({desc}) -> {dest}")
+                    icon_str = "🔹 [Файл]   "
+                    
+                desc_str = f" ({desc})" if desc else ""
+                self.write(f"   {icon_str} {fname}{desc_str} -> {dest}")
 

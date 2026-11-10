@@ -1,0 +1,37 @@
+"""
+Execution context holding runtime flags and state.
+"""
+from typing import Optional
+
+
+class ExecutionContext:
+    """Контекст выполнения операции развертывания."""
+    def __init__(
+        self,
+        dry_run: bool = False,
+        purge: bool = False,
+        clean_env: bool = False,
+        verbose: bool = False,
+        remote: Optional[str] = None,
+        non_interactive: bool = False,
+        rescan: bool = False,
+        json_output: bool = False,
+    ):
+        self.dry_run = dry_run
+        self.purge = purge
+        self.clean_env = clean_env
+        self.verbose = verbose
+        self.remote = remote
+        self.non_interactive = non_interactive
+        self.rescan = rescan
+        self.json_output = json_output
+
+    def log(self, message: str) -> None:
+        """Печать информационных сообщений с учетом json_output."""
+        if not self.json_output:
+            print(message)
+
+    def log_verbose(self, message: str) -> None:
+        """Печать подробных отладочных сообщений."""
+        if self.verbose and not self.json_output:
+            print(f"🔍 [DEBUG] {message}")

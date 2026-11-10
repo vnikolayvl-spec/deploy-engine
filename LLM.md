@@ -1,14 +1,49 @@
-# 🤖 Deploy Engine — Technical Context & Rules for LLM / AI
+# 🤖 Deploy Engine 2.0 — Technical Context & Rules for LLM / AI
 
-This file serves as a system prompt and technical architecture map for AI models (ChatGPT, Claude, Cursor, etc.). When modifying code or planning features, strictly adhere to the constraints, directory layouts, and design patterns documented below.
+This file serves as a system prompt, technical architecture map, and development constitution for AI models (Claude, ChatGPT, Cursor, Gemini, etc.). When modifying code, adding features, or creating packages, strictly adhere to the constraints, directory layouts, and design principles documented below.
 
 ---
 
-## 🛠️ Core Architectural Philosophy
-1. **Decoupled State & Execution**: The `Engine` class acts strictly as a centralized data registry (State Hub). It must contain no recursive parsing loops or physical I/O execution logic.
-2. **Pluggable Module Pattern**: All core tasks are delegated to single-responsibility service modules located in `lib/modules/`.
-3. **Component-Based TUI**: UI layers use the `Textual` framework and must be separated into modular widgets located in `lib/ui/`.
-4. **Linux Compliance (FHS)**: Built-in defaults mirror standard Linux hierarchy paths (FHS) and permission permissions.
+## 🏛️ Core Development Principles (Constitution)
+
+1. **Strict 1 Class Per File Rule**:
+   - Every `.py` file must contain **at most one class** (or dedicated utility functions if no class).
+   - Never declare multiple domain classes or helper classes in the same file.
+2. **Maximum 300 Lines Per File**:
+   - No single file must ever exceed 300 lines of code.
+   - If a file approaches 300 lines, it is an architectural signal to decompose responsibilities into smaller, focused single-responsibility classes.
+3. **No God Objects / No Superclasses**:
+   - The `Engine` class in `lib/core/engine.py` is strictly a lightweight facade (<250 lines) that coordinates specialized sub-managers.
+   - Business logic must never be dumped directly into the engine.
+4. **Terminal Directory Traversal (`DirectoryCrawler`)**:
+   - When recursing through directory trees, if a directory contains `manifest.json`, the crawler records it as an autonomous package root and **terminates recursion for all subdirectories** of that folder.
+5. **Package Cache (`packages.json`) & Instant Startup**:
+   - Package discovery indexes are cached in `packages.json`.
+   - On startup, the engine reads directly from `packages.json` without crawling disks unless `--rescan` or `deploy.py scan` is explicitly invoked.
+6. **Namespace & Collision Disambiguation (`NameCollisionResolver`)**:
+   - Packages can be addressed by short name (e.g. `api`) if unique across the repository.
+   - If multiple packages share the same short name (e.g. `backend/api` vs `frontend/api`), the engine must raise `NameCollisionError` specifying all candidates and require full namespace.
+7. **Persistent Dynamic Data Units (`data`)**:
+   - Files of type `data` are routed to `/var/lib/de_{package_name}/` (mode `0o600` / `0o700`).
+   - **Zero Overwrite Guarantee**: Existing databases and state files are **never overwritten** during reinstall or update.
+   - On uninstall, data files are preserved by default (deleted only with `--purge`).
+8. **Non-Destructive ENV Upsert (`EnvUpsertManager`)**:
+   - When deploying updates to `/etc/default/de_{pkg}/{pkg}.env`, existing user-configured values and live secrets are **never modified or erased**.
+   - Only newly introduced keys from the package template are appended.
+   - Full reset to defaults is allowed only if `--clean-env` is explicitly passed.
+   - On uninstall, environment directories are preserved by default (deleted only with `--purge`).
+9. **Topological Dependency Graph (`DependencyGraph`)**:
+   - Package inter-dependencies (`requires`) are resolved into an execution queue using Kahn's topological sort algorithm.
+   - Cycles must be caught early with `DependencyCycleError`.
+10. **Batched System Dependencies (`SystemPackageManager`)**:
+    - `sys_packages` across all packages in the installation queue are deduplicated and installed in **a single batched call** to the OS package manager (`apt-get install -y ...`).
+11. **Transactional Atomic Execution & LIFO Rollback (`TransactionManager`)**:
+    - Every file creation, directory creation, symlink, and backup is recorded in a transaction journal.
+    - If any step fails during installation or hooks, the engine executes an atomic rollback in reverse (LIFO) order, restoring backups and cleaning created files.
+12. **Idempotence & Dry-Run Mode (`--dry-run` / `-n`)**:
+    - All installation pipelines support simulation mode without touching the filesystem or invoking mutating OS commands.
+13. **Local & Remote Inspection (`deploy.py list`)**:
+    - Machine state recorded in `/etc/default/state.json` can be queried locally or over SSH via `--remote [user@]host[:port]` with human table or `--json` output.
 
 ---
 
@@ -16,133 +51,133 @@ This file serves as a system prompt and technical architecture map for AI models
 
 ```text
 deploy-engine/
-├── deploy_config.py      # Global constants (SYS_BIN, SYS_SYSTEMD, ENV_PATH, ENV_PREFIX)
-├── deploy.py             # CLI Entrypoint (install / uninstall / reinstall)
-├── deploy_ui.py          # TUI Bootstrapper (.venv auto-creation wrapper)
+├── deploy.py                  # CLI Entrypoint (install, uninstall, reinstall, list, scan)
+├── deploy_config.py           # Global constants (FHS paths, default packages directory, cache file)
+├── deploy_ui.py               # TUI Bootstrapper (.venv auto-creation wrapper for Textual)
+├── VERSION.txt                # Version number (e.g., 2.0.0)
+├── COMMIT.txt                 # Commit descriptor (ignored in git)
+├── CHANGELOG.txt              # Changelog history (ignored in git)
+├── .gitignore                 # Merged git ignore rules
+├── LICENSE                    # Open-source license
+├── README.md                  # Comprehensive user documentation
+├── LLM.md                     # AI Context, rules, and architecture specification (this file)
+├── tests/
+│   └── test_deploy_engine.py  # Unit test suite covering all core features
 └── lib/
-    ├── engine.py         # Main orchestrator & context dispatcher (Clean Context Hub)
-    ├── ui_app.py         # Screen controller widget mount point & button listeners
-    ├── utils.py          # Shared tools (root check, .venv virtual env bootstrap)
-    ├── modules/          # Core Back-End Plugins (Engine Context passed as `self`)
-    │   ├── dependency_resolver.py # Recursively builds package resolution trees & handles 'requires'
-    │   ├── env_manager.py         # Regular expression prompt parsers & 3-stage Upsert .env compiler
-    │   ├── file_installer.py      # Core physical I/O pipeline: directories, shutil, and os.symlink
-    │   ├── lifecycle_hooks.py     # Command string template expanding & shell runner wrappers
-    │   ├── manifest_loader.py     # JSON reader, nested 'includes' crawler, and {{ROOT_DIR}} calculation
-    │   ├── path_resolver.py       # 'files/' discovery loops & destination route calculator
-    │   └── sys_packages.py        # Automated Linux package manager discovery (APT/YUM triggers)
-    └── ui/               # Modular Front-End Components
-        ├── styles.py              # Isolated global CSS code strings (APP_CSS layout grid)
-        ├── package_tree.py        # Custom Tree widget with sequential Spacebar state loops
-        └── plan_preview.py        # Real-time RichLog compiler for dependency mock updates
+    ├── __init__.py
+    ├── engine.py              # Backward-compatible facade export (from lib.core.engine import Engine)
+    ├── ui_app.py              # Textual TUI screen controller & action listeners
+    ├── utils.py               # Root checking and GUI bootstrap helpers
+    ├── core/                  # Core abstractions and facade
+    │   ├── deploy_engine_error.py       # Base exception DeployEngineError
+    │   ├── manifest_validation_error.py # Schema & manifest syntax errors
+    │   ├── name_collision_error.py      # Namespace disambiguation error
+    │   ├── dependency_cycle_error.py    # Cyclic dependency error
+    │   ├── rollback_error.py            # Transaction rollback failure error
+    │   ├── execution_context.py         # Runtime flags (dry_run, purge, clean_env, remote, json)
+    │   └── engine.py                    # Lightweight orchestrator facade (<250 lines)
+    ├── discovery/             # Package discovery and indexing
+    │   ├── directory_crawler.py         # Terminal recursive crawler (stops at manifest.json)
+    │   ├── manifest_parser.py           # JSON manifest parsing and schema normalization
+    │   ├── name_collision_resolver.py   # Namespace & short name registry and resolver
+    │   ├── package_cache_manager.py     # Atomic save/load of packages.json cache
+    │   └── package_registry.py          # Central registry coordinating crawler, cache, and resolver
+    ├── dependencies/          # Dependency managers
+    │   ├── dependency_graph.py          # Kahn's topological sort and cycle detection
+    │   ├── system_pkg_manager.py        # OS package manager detection & batched apt-get install
+    │   ├── python_pkg_manager.py        # Pip and virtualenv requirements installer
+    │   └── node_pkg_manager.py          # Npm package installer
+    ├── installer/             # File and physical I/O pipelines
+    │   ├── unit_path_resolver.py        # FHS destination route calculator and permission mapper
+    │   ├── data_unit_installer.py       # Persistent data installer (/var/lib/de_{pkg}) with zero-overwrite
+    │   ├── transaction_manager.py       # Action journal with LIFO rollback engine
+    │   └── file_installer.py            # File copies, symlinks, directory creation, backups
+    ├── env/                   # Environment & secrets management
+    │   ├── env_parser.py                # Line-by-line .env parser preserving structure & comments
+    │   ├── secret_masker.py             # Masking sensitive tokens/passwords in console output
+    │   └── env_upsert_manager.py        # Non-destructive upsert, {{PROMPT}} resolver, --clean-env
+    ├── lifecycle/             # Pre/Post lifecycle hooks
+    │   ├── hook_context.py              # {{SYS_BIN}}, {{ENV_DIR}}, {{DATA_DIR}} macro interpolator
+    │   └── hook_executor.py             # Shell hook runner with dry-run support
+    ├── state/                 # State storage & query
+    │   ├── state_repository.py          # Atomic /etc/default/state.json manager
+    │   └── package_inspector.py         # List installed packages in table or JSON format
+    ├── remote/                # SSH remote operations
+    │   ├── ssh_client.py                # Subprocess-based SSH and SCP runner
+    │   └── remote_deployer.py           # Tarball bundling, transport, and remote execution
+    └── ui/                    # Textual GUI widgets
+        ├── package_tree.py              # Spacebar-toggled package selection tree
+        ├── plan_preview.py              # Deployment plan log preview
+        └── styles.py                    # CSS styling rules
 ```
 
 ---
 
-## 🧬 Concrete Data Models & State Loops
+## 🧬 Unit Types & FHS Destination Conventions
 
-### 1. Unified Tree Spacebar Cycling Rules
-When the user toggles a package node via the `Spacebar` in the TUI, states must transition linearly without mixing logical conditions:
-* **For uninstalled packages** (Not listed in server registry): `none` ➔ `[+] install` ➔ `none`.
-* **For deployed packages** (Marked green, found in `state.json`): `none` ➔ `[↻] reinstall` ➔ `[-] uninstall` ➔ `none`.
-* **Cascade Loop**: Toggling a parent node must recursively push down the exact same status mapping to all child units and package dependents.
+The engine determines destination paths, permissions, and handling loops based on the declared `type`:
 
-### 2. Destination Route Conventions (Path Resolver Mapping)
-If a manifest unit omits a definitive `"dest"` attribute, route targets are computed implicitly using these strict fallbacks:
-* `unit` / `service` / `timer` ➔ `config.SYS_SYSTEMD / [basename]` (mode: `644`)
-* `script` / `.sh` / `.py` ➔ `config.SYS_BIN / [basename]` (mode: `755`)
-* `env` ➔ `config.ENV_PATH / config.ENV_PREFIX{package_name} / [basename|env]` (mode: `600`)
-* `file` (Default fallback type) ➔ `/opt/de_{package_name}/files/ / [relative_path]` (mode: `644`)
+| Unit Type | Target FHS Path | Permissions | Behavior |
+|:---|:---|:---|:---|
+| `script` | `{{SYS_BIN}}/<name>` (`/usr/local/bin`) | `0o755` (`rwxr-xr-x`) | Executable system utilities |
+| `unit` / `service` | `{{SYS_SYSTEMD}}/<name>` (`/etc/systemd/system`) | `0o644` (`rw-r--r--`) | Systemd daemon service units |
+| `timer` | `{{SYS_SYSTEMD}}/<name>` (`/etc/systemd/system`) | `0o644` (`rw-r--r--`) | Systemd timer units |
+| `env` | `{{ENV_PATH}}/de_{pkg}/{pkg}.env` (`/etc/default/...`) | `0o600` (`rw-------`) | Sandboxed secrets; non-destructive upsert |
+| `data` | `{{STATE_DIR}}/de_{pkg}/<name>` (`/var/lib/...`) | `0o600` (dir `0o700`) | Persistent databases/state; **never overwritten** |
+| `symlink` | `{{SYS_BIN}}/<link_name>` | `0o777` (`rwxrwxrwx`) | Symbolic link pointing to executable |
+| `file` | Explicit `target` or `/etc/{pkg}/<name>` | `0o644` (`rw-r--r--`) | Configuration files or static assets |
 
-### 3. Three-Stage Secret Merging Sequence
-When processing units with the `env` descriptor, compiled states must be merged linearly into the `dest` sandbox layout:
-* **Layer 1**: Scan target asset path in `files/` inside the local repository. Extract core constants and catch text blocks containing `{{PROMPT:notice_text}}` using regular expressions.
-* **Layer 2**: Mount existing `.env` fields already recorded inside the server path. Prevent overwriting old live secrets.
-* **Layer 3**: Trigger user interactive prompts for uninitialized `{{PROMPT}}` values. Compile fields together and lock with permissions `600`.
+---
 
-### 4. Machine Metadata Assets (pack.env Scheme)
-Every successful installation pipeline must dump an environment descriptor containing structured array collections into `config.ENV_PATH/config.ENV_PREFIX{package_name}/pack.env`:
-```bash
-SCRIPTS=("/usr/local/bin/sample.py")
-TIMERS=()
-UNITS=("/etc/systemd/system/sample.service")
-FILES=("/opt/de_sample-pkg/files/config.json")
-```
+## 📜 Manifest Specification (`manifest.json`)
 
-### 5. Manifest Declarative Blueprint (`manifest.json` Specification)
-When generating, validating, or parsing a package declaration, the engine and AI sub-routines must adhere to this dual-node JSON schema:
-*   **The `"packages"` Node**: Contains logical meta-packages. It aggregates high-level human descriptions (`desc`), native OS requirements (`sys_packages`), installation inclusions (`include`), and sequential post-deployment execution commands (`post_install`).
-*   **The `"units"` Node**: Contains the absolute definition for every resource declared in the `include` arrays. Each entity must specify an operational `type` and an optional explicit location override.
+Deploy Engine 2.0 supports both autonomous single-package manifests and multi-package inclusion manifests:
 
-### 6. Declarative Unit Typings & Pipeline Execution Rules
-The deployment pipeline (`file_installer.py`) modifies its execution loop, permission allocation, and I/O handlers based strictly on the declared unit `type`:
-*   `type: "script"`: Automatically bound to `{{SYS_BIN}}` with executable permissions set to `0o755`.
-*   `type: "unit"` / `type: "service"`: Bound to `{{SYS_SYSTEMD}}` with permissions set to `0o644`. Automatically queues `systemctl daemon-reload` and schedules `systemctl enable` hooks during orchestration.
-*   `type: "file"`: **Recursive Multi-Target Processor**. Supports copying individual assets as well as whole directories. 
-    *   *Special-File Isolation Rule*: The copying loop must utilize low-level file stat mask validation (`os.lstat().st_mode` paired with `stat.S_ISSOCK` and `stat.S_ISFIFO`). Any transient UNIX sockets (`.sock`) or named pipes (`FIFO`) found within source trees must be silently skipped to prevent I/O hanging and descriptor locks.
-*   `type: "env"`: Triggers the 3-stage interactive secret compilation sequence. Reads templates via regular expressions, isolates inputs inside `/dev/tty` loops for TUI safety, merges live states to maintain persistence, and enforces highly restricted `0o600` permissions under `root:root` ownership.
-
-### 7. Explicit Destination Precedence & Macro Expansion Token Rules
-The path resolution layer executes two hard constraints before data hits the file system:
-1.  **Explicit Target Override**: If a unit definition contains a `"dest"` attribute, the engine completely bypasses the default destination route conventions (FHS Fallbacks) and forces delivery to that exact absolute path.
-2.  **Context Macro Expansion**: The following bracketed tokens must be dynamically expanded across all `src` and `dest` attributes prior to running installation blocks:
-    *   `{{ROOT_DIR}}` — The global engine runtime directory.
-    *   `{{BASE_DIR}}` — The absolute physical path of the directory hosting the active `manifest.json`.
-    *   `{{SYS_BIN}}` — Standardized system binary folder pulled from `deploy_config.py`.
-    *   `{{SYS_SYSTEMD}}` — Systemd service unit storage folder.
-
-### 8. Gold-Master Reference Manifest Structure
-When asked to output or generate an engine-compliant manifest, use this precise blueprint:
+### Autonomous Package Manifest Example:
 ```json
 {
-  "packages": {
-    "sample-service": {
-      "desc": "Universal daemon meta-package with recursive codebases and templated environment injection",
-      "sys_packages": [
-        "python3",
-        "python3-pip"
-      ],
-      "include": [
-        "launcher.sh",
-        "service.service",
-        "production.env",
-        "src_code"
-      ],
-      "post_install": [
-        "systemctl daemon-reload",
-        "systemctl enable service.service",
-        "systemctl start service.service"
-      ]
+  "name": "sample-daemon",
+  "version": "1.2.0",
+  "description": "Autonomous background service daemon",
+  "requires": ["base-core"],
+  "sys_packages": ["curl", "jq"],
+  "python_packages": ["requirements.txt"],
+  "units": {
+    "deploy.env": {
+      "type": "env",
+      "desc": "Configuration and server tokens"
+    },
+    "sample-daemon.sh": {
+      "type": "script",
+      "desc": "CLI launcher"
+    },
+    "sample-daemon.service": {
+      "type": "unit",
+      "desc": "Systemd background service"
+    },
+    "registry.sqlite": {
+      "type": "data",
+      "desc": "Persistent registry database (never overwritten)"
+    },
+    "sample-cli": {
+      "type": "symlink",
+      "symlink": "{{SYS_BIN}}/sample-daemon.sh"
     }
   },
-  "units": {
-    "launcher.sh": {
-      "type": "script",
-      "desc": "Executable entrypoint wrapper script"
-    },
-    "service.service": {
-      "type": "unit",
-      "desc": "Systemd background daemon unit file"
-    },
-    "production.env": {
-      "type": "env",
-      "desc": "Interactive configuration template with token prompt markers",
-      "dest": "/etc/default/de_sample/app.env"
-    },
-    "src_code": {
-      "type": "file",
-      "desc": "Core python package directory copied recursively with structural filtering",
-      "dest": "/opt/de_sample/src_code"
-    }
-  }
+  "pre_install": "echo 'Preparing environment...'",
+  "post_install": "systemctl daemon-reload && systemctl enable --now sample-daemon.service",
+  "pre_uninstall": "systemctl stop sample-daemon.service || true",
+  "post_uninstall": "systemctl daemon-reload"
 }
 ```
 
 ---
 
-## 🚨 Mandatory AI Code Modification Rules
-1. **Never create a God Object**: Do not dump complex procedural operations into `lib/engine.py`. Keep it as an orchestrator proxy.
-2. **Preserve Tabulation Integrity**: Textual applications are extremely layout-sensitive. Never miss matching spaces (4 for class fields, 8 for inner widget wrappers, 12-16 for context loops).
-3. **No Brittle Auto-Restarts**: Never inject automated daemon-restarts into configuration file copiers. All lifecycle automation must remain explicitly declared inside `post_install` arrays.
-4. **Maintain State Isolation**: Front-end widgets must fetch compilation items directly using proper references (e.g., `self.engine.files_to_deploy`), rather than cloning separate internal registries.
+## 🚨 Mandatory Rules for AI Agents Modifying the Codebase
 
+1. **One Class Per File**: Never violate this rule. Create a new file in the appropriate subpackage under `lib/` for any new class.
+2. **Length Guard**: Check file line count before finishing edits. Every file must remain under 300 lines.
+3. **No Breaking Changes to Engine Facade**: `lib/engine.py` must continue to export `Engine` with backward compatibility for legacy callers and unit tests.
+4. **Data Units Must Never Overwrite**: If modifying `DataUnitInstaller` or `FileInstaller`, never add code that forces overwriting existing destination files when `unit_type == "data"`.
+5. **ENV Non-Destructive Invariant**: Existing variables in `/etc/default/de_{pkg}/{pkg}.env` must never be wiped or overwritten unless `clean_env=True` is explicitly specified by user flag.
+6. **Transaction Cleanliness**: Always register created files, directories, symlinks, and backups with `TransactionManager` so automatic rollback succeeds if an error occurs.
