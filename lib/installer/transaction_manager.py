@@ -19,15 +19,15 @@ class TransactionManager:
         self._journal: List[Dict[str, Any]] = []
 
     def record_created_file(self, file_path: str) -> None:
-        """Регистрирует создание нового файла."""
+        """Регистрирует создание нового файла или целевой папки юнита."""
         self._journal.append({"action": self.ACTION_CREATED_FILE, "path": file_path})
 
     def record_created_dir(self, dir_path: str) -> None:
-        """Регистрирует создание новой директории."""
+        """Регистрирует создание промежуточной новой директории."""
         self._journal.append({"action": self.ACTION_CREATED_DIR, "path": dir_path})
 
     def record_backup(self, original_path: str, backup_path: str) -> None:
-        """Регистрирует создание резервной копии перезаписываемого файла."""
+        """Регистрирует создание резервной копии перезаписываемого файла или директории."""
         self._journal.append({
             "action": self.ACTION_BACKUP,
             "original_path": original_path,
@@ -50,7 +50,11 @@ class TransactionManager:
             try:
                 if action == self.ACTION_CREATED_FILE:
                     path = entry["path"]
-                    if os.path.exists(path) and not os.path.islink(path):
+                    if os.path.islink(path):
+                        os.unlink(path)
+                    elif os.path.isdir(path):
+                        shutil.rmtree(path, ignore_errors=True)
+                    elif os.path.exists(path):
                         os.remove(path)
 
                 elif action == self.ACTION_SYMLINK:
@@ -61,13 +65,18 @@ class TransactionManager:
                 elif action == self.ACTION_BACKUP:
                     orig = entry["original_path"]
                     bkp = entry["backup_path"]
-                    if os.path.exists(bkp):
+                    if os.path.exists(bkp) or os.path.islink(bkp):
+                        if os.path.islink(orig):
+                            os.unlink(orig)
+                        elif os.path.isdir(orig):
+                            shutil.rmtree(orig, ignore_errors=True)
+                        elif os.path.exists(orig):
+                            os.remove(orig)
                         shutil.move(bkp, orig)
 
                 elif action == self.ACTION_CREATED_DIR:
                     d_path = entry["path"]
-                    if os.path.exists(d_path) and os.path.isdir(d_path):
-                        # Удаляем директорию, только если она пуста
+                    if os.path.exists(d_path) and os.path.isdir(d_path) and not os.path.islink(d_path):
                         if not os.listdir(d_path):
                             os.rmdir(d_path)
 
@@ -78,13 +87,16 @@ class TransactionManager:
             raise RollbackError("Ошибки при выполнении отката транзакции", failed_steps)
 
     def commit(self) -> None:
-        """Подтверждает успешную транзакцию и удаляет временные файлы бэкапов."""
+        """Подтверждает успешную транзакцию и удаляет временные файлы и директории бэкапов."""
         for entry in self._journal:
             if entry["action"] == self.ACTION_BACKUP:
                 bkp = entry.get("backup_path")
-                if bkp and os.path.exists(bkp):
+                if bkp and (os.path.exists(bkp) or os.path.islink(bkp)):
                     try:
-                        os.remove(bkp)
+                        if os.path.isdir(bkp) and not os.path.islink(bkp):
+                            shutil.rmtree(bkp, ignore_errors=True)
+                        else:
+                            os.remove(bkp)
                     except OSError:
                         pass
         self._journal.clear()

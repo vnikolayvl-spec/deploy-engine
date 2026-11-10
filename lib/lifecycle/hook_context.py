@@ -31,6 +31,8 @@ class HookContext:
             "{{VENV_PATH}}": VENV_PATH,
             "{{PKG_NAME}}": self.pkg_name,
             "{{PKG_DIR}}": self.pkg_dir,
+            "{{BASE_DIR}}": self.pkg_dir,
+            "{{ROOT_DIR}}": os.path.dirname(self.pkg_dir),
             "{{ENV_DIR}}": os.path.join(ENV_PATH, f"{ENV_PREFIX}{self.pkg_name}"),
             "{{DATA_DIR}}": os.path.join(STATE_DIR, f"{DATA_PREFIX}{self.pkg_name}"),
         }
@@ -38,7 +40,7 @@ class HookContext:
     def render(self, command: str) -> str:
         """Заменяет все макросы в строке команды."""
         macros = self.get_macros()
-        rendered = command
+        rendered = str(command)
         for macro, value in macros.items():
             rendered = rendered.replace(macro, value)
         return rendered

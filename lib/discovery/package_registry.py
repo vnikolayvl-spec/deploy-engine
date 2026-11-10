@@ -1,5 +1,5 @@
 """
-Package registry storing discovered packages and units.
+Package registry storing discovered packages, folder hierarchy metadata, and units.
 """
 import os
 from typing import Any, Dict, List, Optional
@@ -10,7 +10,7 @@ from lib.discovery.package_cache_manager import PackageCacheManager
 
 
 class PackageRegistry:
-    """Реестр пакетов: хранение, индексация, кэширование и поиск."""
+    """Реестр пакетов и папок: хранение, индексация, кэширование и поиск."""
 
     def __init__(self, cache_file: str = "packages.json"):
         self.packages: Dict[str, Dict[str, Any]] = {}
@@ -24,9 +24,23 @@ class PackageRegistry:
         name = package_data["name"]
         pkg_namespace = namespace or name
         package_data["namespace"] = pkg_namespace
+        if "folder_path" not in package_data:
+            package_data["folder_path"] = os.path.dirname(pkg_namespace) if "/" in pkg_namespace else ""
         self.packages[pkg_namespace] = package_data
         self.resolver.register_package(pkg_namespace, name)
         return pkg_namespace
+
+    def register_folder(self, folder_path: str, folder_info: Dict[str, Any]) -> None:
+        """Регистрирует метаданные папки (включая desc) в иерархии дерева."""
+        norm_path = "" if folder_path in ("", ".") else folder_path.strip("/")
+        if not norm_path:
+            return
+        self.folders[norm_path] = {
+            "name": folder_info.get("name") or os.path.basename(norm_path),
+            "desc": folder_info.get("desc") or folder_info.get("description") or "",
+            "base_dir": folder_info.get("base_dir", ""),
+            "folder_path": norm_path,
+        }
 
     def get(self, query: str) -> Dict[str, Any]:
         """Возвращает данные пакета по короткому имени или пространству имен."""
@@ -45,42 +59,36 @@ class PackageRegistry:
         """Возвращает все зарегистрированные пакеты."""
         return dict(self.packages)
 
-    def get_folder_desc(self, folder_path: str) -> str:
-        """Возвращает описание папки из её манифеста, если оно задано."""
-        normalized = folder_path.strip("/").replace(os.sep, "/")
-        if normalized in self.folders:
-            return self.folders[normalized].get("desc", "")
-        # Поиск по совпадению базового каталога или конца пути
-        for f_ns, f_meta in self.folders.items():
-            if f_ns == normalized or f_ns.endswith(f"/{normalized}"):
-                return f_meta.get("desc", "")
-        return ""
-
     def load_from_cache(self) -> bool:
-        """Загружает базу пакетов из кэша packages.json."""
+        """Загружает базу пакетов и папок из кэша packages.json."""
         data = self.cache_manager.load_cache()
-        if not data or "packages" not in data:
+        if not data or "packages" not in data or "folders" not in data:
             return False
 
         self.packages.clear()
         self.folders.clear()
         self.resolver.clear()
-        if "folders" in data and isinstance(data["folders"], dict):
-            self.folders.update(data["folders"])
-
+        for folder_path, folder_data in data.get("folders", {}).items():
+            self.register_folder(folder_path, folder_data)
         for namespace, pkg_data in data["packages"].items():
             self.register(pkg_data, namespace)
-        return len(self.packages) > 0
+        return len(self.packages) > 0 or len(self.folders) > 0
 
     def save_to_cache(self) -> bool:
-        """Сохраняет текущий реестр в кэш packages.json."""
-        return self.cache_manager.save_cache(self.packages)
+        """Сохраняет текущий реестр пакетов и папок в кэш packages.json."""
+        return self.cache_manager.save_cache(self.packages, folders_index=self.folders)
+
+    @staticmethod
+    def _has_child_namespaces(ns: str, all_namespaces: List[str]) -> bool:
+        """Проверяет, есть ли у данной папки вложенные подпапки с манифестами."""
+        if ns == ".":
+            return any(other != "." for other in all_namespaces)
+        prefix = f"{ns}/"
+        return any(other.startswith(prefix) for other in all_namespaces)
 
     def scan_directories(self, search_roots: List[str], force_rescan: bool = False) -> int:
         """
-        Обходит директории и наполняет реестр.
-        Манифесты во вложенных папках задают desc.
-        Пустые манифесты валидны. Папки без манифеста игнорируются.
+        Обходит директории по дереву папок с manifest.json и наполняет реестр.
         """
         if not force_rescan and self.load_from_cache():
             return len(self.packages)
@@ -91,61 +99,92 @@ class PackageRegistry:
 
         crawler = DirectoryCrawler(search_roots)
         discovered = crawler.crawl_all()
+        all_ns = list(discovered.keys())
 
-        for namespace, manifest_path in discovered.items():
+        for namespace, manifest_path in sorted(discovered.items()):
             try:
                 parsed = self.parser.parse_file(manifest_path)
-                folder_desc = parsed.get("desc") or parsed.get("description") or ""
-                if not folder_desc and parsed.get("is_multi_package"):
-                    pkgs = parsed.get("packages", {})
-                    dir_name = os.path.basename(os.path.dirname(manifest_path))
-                    if dir_name in pkgs:
-                        folder_desc = pkgs[dir_name].get("desc") or pkgs[dir_name].get("description") or ""
-                    elif len(pkgs) == 1:
-                        single_p = next(iter(pkgs.values()))
-                        folder_desc = single_p.get("desc") or single_p.get("description") or ""
+                has_children = self._has_child_namespaces(namespace, all_ns)
+                norm_ns = "" if namespace == "." else namespace.strip("/")
 
-                base_dir = parsed.get("base_dir") or os.path.dirname(os.path.abspath(manifest_path))
-
-                self.folders[namespace] = {
-                    "desc": folder_desc,
-                    "base_dir": base_dir,
-                    "manifest_path": manifest_path,
-                }
-
-                # Если манифест пустой или предназначен только для описания папки
+                # 1. Если манифест относится только к папке (пустой {} или содержит только desc)
                 if parsed.get("is_folder_only"):
+                    if norm_ns:
+                        self.register_folder(norm_ns, parsed)
                     continue
+
+                # 2. Если у папки есть вложенные подпапки с манифестами, регистрируем саму папку
+                if has_children and norm_ns:
+                    self.register_folder(norm_ns, {
+                        "name": os.path.basename(norm_ns),
+                        "desc": parsed.get("desc", ""),
+                        "base_dir": parsed.get("base_dir", ""),
+                    })
+
+                # Определяем родительскую папку для пакетов внутри этого манифеста
+                if norm_ns == "":
+                    pkg_folder = ""
+                elif has_children:
+                    pkg_folder = norm_ns
+                else:
+                    pkg_folder = os.path.dirname(norm_ns) if "/" in norm_ns else ""
 
                 if parsed.get("is_multi_package"):
                     for sub_name, sub_pkg in parsed.get("packages", {}).items():
-                        if namespace.endswith(f"/{sub_name}") or namespace == sub_name:
-                            sub_ns = namespace
-                        else:
-                            sub_ns = f"{namespace}/{sub_name}"
-                        self.register(sub_pkg, sub_ns)
+                        sub_pkg["folder_path"] = pkg_folder
+                        reg_key = f"{pkg_folder}/{sub_name}" if pkg_folder else sub_name
+                        self.register(sub_pkg, reg_key)
                 else:
-                    self.register(parsed, namespace)
+                    parsed["folder_path"] = pkg_folder
+                    pkg_name = parsed["name"]
+                    reg_key = norm_ns if norm_ns else pkg_name
+                    self.register(parsed, reg_key)
+
             except Exception as err:
                 print(f"⚠️ Ошибка загрузки манифеста {manifest_path}: {err}")
 
-        # Сохраняем в кэш
         self.save_to_cache()
         return len(self.packages)
 
-    def load_legacy_manifest(self, manifest_path: str) -> None:
-        """Поддержка прямой загрузки одиночного manifest.json или дерева includes."""
+    def load_legacy_manifest(self, manifest_path: str, root_base_dir: Optional[str] = None) -> None:
+        """Поддержка прямой загрузки manifest.json с сохранением иерархии папок."""
         abs_path = os.path.abspath(manifest_path)
         base_dir = os.path.dirname(abs_path)
+        effective_root = root_base_dir or base_dir
+
+        # Сначала выполняем обход дерева папок от корневой директории манифеста
+        if root_base_dir is None:
+            self.scan_directories([effective_root], force_rescan=True)
+
         parsed = self.parser.parse_file(abs_path)
+        rel_dir = os.path.relpath(base_dir, effective_root)
+        norm_rel = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
 
         if parsed.get("is_multi_package"):
+            pkg_folder = os.path.dirname(norm_rel) if "/" in norm_rel else ""
             for pkg_name, pkg_data in parsed.get("packages", {}).items():
-                self.register(pkg_data, pkg_name)
+                if not self.has(pkg_name):
+                    pkg_data["folder_path"] = pkg_folder
+                    reg_key = f"{pkg_folder}/{pkg_name}" if pkg_folder else pkg_name
+                    self.register(pkg_data, reg_key)
             for inc in parsed.get("includes", []):
-                inc_path = os.path.join(base_dir, inc)
+                inc_path = os.path.normpath(os.path.join(base_dir, inc))
                 if os.path.exists(inc_path):
-                    self.load_legacy_manifest(inc_path)
-        else:
+                    inc_rel_dir = os.path.relpath(os.path.dirname(inc_path), effective_root).replace(os.sep, "/")
+                    parent_folder = os.path.dirname(inc_rel_dir) if "/" in inc_rel_dir else ""
+                    if parent_folder and parent_folder not in self.folders:
+                        self.register_folder(parent_folder, {
+                            "name": os.path.basename(parent_folder),
+                            "desc": "",
+                            "base_dir": os.path.join(effective_root, parent_folder),
+                        })
+                    self.load_legacy_manifest(inc_path, root_base_dir=effective_root)
+        elif not parsed.get("is_folder_only"):
             pkg_name = parsed["name"]
-            self.register(parsed, pkg_name)
+            if not self.has(pkg_name):
+                pkg_folder = os.path.dirname(norm_rel) if "/" in norm_rel else ""
+                parsed["folder_path"] = pkg_folder
+                reg_key = norm_rel if norm_rel else pkg_name
+                self.register(parsed, reg_key)
+        elif norm_rel:
+            self.register_folder(norm_rel, parsed)

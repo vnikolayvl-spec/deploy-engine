@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 
 class PackageCacheManager:
-    """Управление кэшем обнаруженных пакетов в JSON (packages.json)."""
+    """Управление кэшем обнаруженных пакетов и папок в JSON (packages.json)."""
 
     def __init__(self, cache_file_path: str = "packages.json"):
         self.cache_file_path = cache_file_path
@@ -18,7 +18,7 @@ class PackageCacheManager:
         return os.path.exists(self.cache_file_path) and os.path.getsize(self.cache_file_path) > 0
 
     def load_cache(self) -> Optional[Dict[str, Any]]:
-        """Загружает базу пакетов из файла кэша."""
+        """Загружает базу пакетов и папок из файла кэша."""
         if not self.has_cache():
             return None
 
@@ -31,12 +31,18 @@ class PackageCacheManager:
             return None
         return None
 
-    def save_cache(self, packages_index: Dict[str, Any], version: str = "2.0.0") -> bool:
-        """Сохраняет метаданные и структуру пакетов в packages.json атомарно."""
+    def save_cache(
+        self,
+        packages_index: Dict[str, Any],
+        version: str = "2.1.0",
+        folders_index: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Сохраняет метаданные и структуру пакетов и папок в packages.json атомарно."""
         payload = {
             "version": version,
             "updated_at": time.time(),
             "packages": packages_index,
+            "folders": folders_index if folders_index is not None else {},
         }
         tmp_file = f"{self.cache_file_path}.tmp"
         try:

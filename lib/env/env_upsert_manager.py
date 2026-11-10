@@ -4,6 +4,7 @@ Non-destructive ENV upsert manager.
 import os
 import re
 import shutil
+import sys
 from typing import Optional
 from deploy_config import ENV_PATH, ENV_PREFIX
 from lib.core.execution_context import ExecutionContext
@@ -63,7 +64,6 @@ class EnvUpsertManager:
             with open(src_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            # Обработка {{PROMPT:key:default}}
             content = self._resolve_prompts(content)
 
             if os.path.exists(dest_path):
@@ -87,12 +87,10 @@ class EnvUpsertManager:
             if item["type"] == "pair":
                 k = item["key"]
                 if k not in existing_keys:
-                    # Разрешаем подсказки если есть
                     resolved_raw = self._resolve_prompts(item["raw"])
                     new_lines_to_append.append(resolved_raw)
 
         if new_lines_to_append:
-            # Создаем бэкап перед модификацией
             backup_path = f"{dest_path}.de_bak"
             shutil.copy2(dest_path, backup_path)
             self.transaction_manager.record_backup(dest_path, backup_path)
@@ -124,6 +122,38 @@ class EnvUpsertManager:
             self.context.log(f"🔒 Каталог окружения сохранен: {env_dir} (для удаления используйте --purge)")
 
     def _resolve_prompts(self, text: str) -> str:
-        """Разрешает дефолтные макросы подсказок вида {{PROMPT:key:default}}."""
-        pattern = r"\{\{PROMPT:[^:]+:(.*?)\}\}"
-        return re.sub(pattern, r"\1", text)
+        """
+        Разрешает макросы подсказок вида {{PROMPT:notice}} и {{PROMPT:key:default}}.
+        В интерактивном терминале запрашивает значение у пользователя.
+        В неинтерактивном режиме подставляет значение по умолчанию или пустую строку.
+        """
+        pattern = re.compile(r"\{\{PROMPT:(.*?)\}\}")
+        is_interactive = sys.stdin.isatty() and not os.environ.get("DE_NONINTERACTIVE")
+
+        def replace_match(match: re.Match) -> str:
+            inner = match.group(1).strip()
+            default_val = ""
+            notice = inner
+
+            # Формат {{PROMPT:notice_or_key:default}} (если правая часть после ':' не закрывает скобку)
+            if ":" in inner and not inner.endswith(")"):
+                left, right = inner.rsplit(":", 1)
+                if "(" not in right and ")" not in right:
+                    notice = left.strip()
+                    default_val = right.strip()
+
+            if is_interactive:
+                print(f"\n💬 [ПОДКАЗКА]: {notice}")
+                prompt_msg = f"👉 Введите значение [{default_val}]: " if default_val else "👉 Введите значение (Enter для значения по умолчанию): "
+                try:
+                    sys.stdout.write(prompt_msg)
+                    sys.stdout.flush()
+                    with open("/dev/tty", "r", encoding="utf-8") as tty:
+                        user_input = tty.readline().strip()
+                    return user_input if user_input else default_val
+                except Exception:
+                    return default_val
+
+            return default_val
+
+        return pattern.sub(replace_match, text)
