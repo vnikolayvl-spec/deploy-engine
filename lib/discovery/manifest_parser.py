@@ -1,32 +1,21 @@
 """
-Manifest parser and validator supporting package manifests, multi-package manifests, and folder manifests.
+Manifest parser and validator for package manifests, delegating category manifests to CategoryManifestParser.
 """
 import json
 import os
 from typing import Any, Dict
 from lib.core.manifest_validation_error import ManifestValidationError
+from lib.discovery.category_manifest_parser import CategoryManifestParser
 
 
 class ManifestParser:
-    """Парсер и валидатор файлов манифеста пакетов и папок (manifest.json)."""
+    """Парсер и валидатор манифестов пакетов (с делегированием манифестов подкатегорий)."""
 
-    PACKAGE_KEYS = {
-        "name",
-        "units",
-        "include",
-        "sys_packages",
-        "python_packages",
-        "node_packages",
-        "requires",
-        "dependencies",
-        "pre_install",
-        "post_install",
-        "pre_uninstall",
-        "post_uninstall",
-    }
+    def __init__(self):
+        self.category_parser = CategoryManifestParser()
 
     def parse_file(self, manifest_path: str) -> Dict[str, Any]:
-        """Считывает и парсит JSON-файл манифеста. Пустой файл считается валидным пустым манифестом папки."""
+        """Считывает и парсит JSON-файл манифеста пакета или подкатегории."""
         if not os.path.exists(manifest_path):
             raise ManifestValidationError(f"Файл манифеста не найден: {manifest_path}")
 
@@ -43,21 +32,35 @@ class ManifestParser:
             raise ManifestValidationError(f"Манифест {manifest_path} должен представлять JSON-объект")
 
         base_dir = os.path.dirname(os.path.abspath(manifest_path))
+        filename = os.path.basename(manifest_path)
+
+        # Если файл является манифестом подкатегории — делегируем в CategoryManifestParser
+        if self.category_parser.is_category_manifest(data, filename):
+            return self.category_parser.normalize_category(data, base_dir)
+
         return self.normalize_manifest(data, base_dir)
 
     def normalize_manifest(self, raw_data: Dict[str, Any], base_dir: str) -> Dict[str, Any]:
-        """Нормализует манифест папки или пакета, заполняя дефолтные поля и описания."""
-        folder_desc = str(raw_data.get("desc") or raw_data.get("description") or "").strip()
+        """Нормализует манифест пакета (или мульти-пакета), заполняя дефолтные поля."""
+        if self.category_parser.is_category_manifest(raw_data):
+            return self.category_parser.normalize_category(raw_data, base_dir)
 
-        # 1. Поддержка формата с корневым словарем packages: { "pkg_name": { ... } }
+        folder_desc = str(raw_data.get("desc") or raw_data.get("description") or "").strip()
+        raw_active = raw_data.get("active") if "active" in raw_data else raw_data.get("enabled")
+        folder_active = CategoryManifestParser.parse_bool(raw_active, default=True)
+
+        # 1. Мульти-пакетный манифест с корневым словарем packages: { "pkg_name": { ... } }
         if "packages" in raw_data and isinstance(raw_data["packages"], dict) and raw_data["packages"]:
             top_units = raw_data.get("units", {})
             all_pkg_names = set(raw_data["packages"].keys())
             normalized_multi: Dict[str, Any] = {
+                "type": "package",
+                "is_category": False,
                 "is_multi_package": True,
                 "is_folder_only": False,
                 "desc": folder_desc,
                 "description": folder_desc,
+                "active": folder_active,
                 "includes": list(raw_data.get("includes", [])),
                 "packages": {},
                 "base_dir": base_dir,
@@ -93,22 +96,7 @@ class ManifestParser:
                 normalized_multi["packages"][pkg_name] = self._normalize_single_package(pkg_data, base_dir)
             return normalized_multi
 
-        # 2. Проверка на манифест папки (пустой манифест {} или манифест только с desc / includes)
-        has_pkg_fields = any(k in raw_data and raw_data[k] for k in self.PACKAGE_KEYS)
-        if not has_pkg_fields:
-            folder_name = os.path.basename(base_dir)
-            return {
-                "is_folder_only": True,
-                "is_multi_package": False,
-                "name": folder_name,
-                "desc": folder_desc,
-                "description": folder_desc,
-                "includes": list(raw_data.get("includes", [])),
-                "units": {},
-                "base_dir": base_dir,
-            }
-
-        # 3. Одиночный пакет в манифесте
+        # 2. Одиночный пакет в манифесте
         return self._normalize_single_package(raw_data, base_dir)
 
     def _normalize_single_package(self, data: Dict[str, Any], base_dir: str) -> Dict[str, Any]:
@@ -119,11 +107,16 @@ class ManifestParser:
             raise ManifestValidationError(f"У пакета в {base_dir} отсутствует обязательное имя (name)")
 
         desc = str(data.get("description") or data.get("desc") or "").strip()
+        raw_active = data.get("active") if "active" in data else data.get("enabled")
+        active = CategoryManifestParser.parse_bool(raw_active, default=True)
 
         normalized: Dict[str, Any] = {
+            "type": "package",
+            "is_category": False,
             "is_folder_only": False,
             "is_multi_package": False,
             "is_alias": bool(data.get("is_alias", False)),
+            "active": active,
             "name": name,
             "version": str(data.get("version", "1.0.0")),
             "description": desc,

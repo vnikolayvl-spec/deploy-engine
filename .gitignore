@@ -72,9 +72,10 @@ ipython_config.py
 .env
 .envrc
 .venv
-#env/
-venv/
-#ENV/
+/env/
+/venv/
+/ENV/
+!lib/env/
 env.bak/
 venv.bak/
 *.env

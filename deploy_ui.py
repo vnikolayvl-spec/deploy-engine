@@ -13,16 +13,22 @@ from lib.engine import Engine
 from lib.ui_app import DeployApp
 
 if __name__ == "__main__":
-    manifest_arg = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].endswith(".json") else None
+    source_arg = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else None
 
     engine = Engine()
-    if manifest_arg:
-        engine.load_manifest_recursive(manifest_arg)
+    if source_arg:
+        if os.path.isdir(source_arg):
+            engine.discover_packages(search_roots=[source_arg], force_rescan=True)
+        elif os.path.isfile(source_arg):
+            engine.load_manifest_recursive(source_arg)
+        else:
+            print(f"❌ Ошибка: Источник '{source_arg}' не найден.")
+            sys.exit(1)
     else:
         engine.load_default_manifests()
 
     if not engine.packages and not getattr(engine, "folders", {}):
-        print("Использование TUI: sudo ./deploy_ui.py [путь_к_manifest.json]")
+        print("Использование TUI: sudo ./deploy_ui.py [путь_к_папке_пакетов | путь_к_manifest.json]")
         sys.exit(0)
 
     app = DeployApp(engine)

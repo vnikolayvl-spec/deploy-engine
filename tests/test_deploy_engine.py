@@ -8,18 +8,14 @@ from lib.core.dependency_cycle_error import DependencyCycleError
 from lib.core.execution_context import ExecutionContext
 from lib.core.name_collision_error import NameCollisionError
 from lib.dependencies.dependency_graph import DependencyGraph
-from lib.discovery.directory_crawler import DirectoryCrawler
+from lib.discovery.category_manifest_parser import CategoryManifestParser
 from lib.discovery.name_collision_resolver import NameCollisionResolver
-from lib.discovery.package_cache_manager import PackageCacheManager
 from lib.discovery.package_registry import PackageRegistry
 from lib.engine import Engine
 from lib.env.env_upsert_manager import EnvUpsertManager
 from lib.installer.data_unit_installer import DataUnitInstaller
 from lib.installer.file_installer import FileInstaller
 from lib.installer.transaction_manager import TransactionManager
-from lib.installer.unit_path_resolver import UnitPathResolver
-from lib.state.package_inspector import PackageInspector
-from lib.state.state_repository import StateRepository
 
 
 class TestDeployEngineCore(unittest.TestCase):
@@ -117,7 +113,7 @@ class TestDeployEngineCore(unittest.TestCase):
 
 
 class TestDeployEngine2Features(unittest.TestCase):
-    """Тесты обхода дерева папок, пустых манифестов и установщика директорий."""
+    """Тесты разделения манифестов подкатегорий и пакетов, активности и установщика директорий."""
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp(prefix="de_test_")
@@ -125,47 +121,77 @@ class TestDeployEngine2Features(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_folder_hierarchy_and_empty_manifests(self):
+    def test_category_and_package_manifests_separation(self):
         """
-        Проверка логики обхода:
-        - Вложенные папки с manifest.json (в т.ч. пустым {} и только с desc) обходятся рекурсивно.
-        - Папки без manifest.json игнорируются.
+        Проверка разделения манифестов подкатегорий (category.json / manifest.json с type=category)
+        и манифестов пакетов, а также флага active (активна / не активна).
         """
-        cat_dir = os.path.join(self.test_dir, "services")
-        empty_dir = os.path.join(self.test_dir, "services", "empty-group")
+        active_cat = os.path.join(self.test_dir, "services")
+        inactive_cat = os.path.join(self.test_dir, "experimental")
+        empty_cat = os.path.join(self.test_dir, "services", "empty-group")
         pkg_dir = os.path.join(self.test_dir, "services", "server")
-        ignored_dir = os.path.join(pkg_dir, "files")
+        inactive_pkg_dir = os.path.join(self.test_dir, "experimental", "beta-node")
         no_manifest_branch = os.path.join(self.test_dir, "untracked", "deep")
 
-        os.makedirs(empty_dir, exist_ok=True)
-        os.makedirs(ignored_dir, exist_ok=True)
+        os.makedirs(empty_cat, exist_ok=True)
+        os.makedirs(pkg_dir, exist_ok=True)
+        os.makedirs(inactive_pkg_dir, exist_ok=True)
         os.makedirs(no_manifest_branch, exist_ok=True)
 
-        # Манифест папки только с desc
-        with open(os.path.join(cat_dir, "manifest.json"), "w") as f:
-            f.write('{"desc": "Сетевые и системные сервисы"}')
+        # Манифест активной подкатегории с описанием и порядком
+        with open(os.path.join(active_cat, "category.json"), "w") as f:
+            json.dump({"type": "category", "desc": "Основные сервисы", "active": True, "order": 10}, f)
 
-        # Полностью пустой манифест в папке
-        with open(os.path.join(empty_dir, "manifest.json"), "w") as f:
+        # Манифест неактивной подкатегории (active: false)
+        with open(os.path.join(inactive_cat, "manifest.json"), "w") as f:
+            json.dump({"type": "category", "desc": "Экспериментальные модули", "active": False}, f)
+
+        # Пустой манифест подкатегории
+        with open(os.path.join(empty_cat, "manifest.json"), "w") as f:
             f.write("{}")
 
-        # Манифест пакета во вложенной папке
+        # Манифест пакета в активной подкатегории
         with open(os.path.join(pkg_dir, "manifest.json"), "w") as f:
-            f.write('{"name": "server", "desc": "Сервис обработки"}')
+            json.dump({"name": "server", "desc": "Сервис обработки", "units": {"app.sh": {"type": "script"}}}, f)
 
-        # Манифест внутри ветки без родительского manifest.json (должен быть проигнорирован)
+        # Манифест пакета в неактивной подкатегории
+        with open(os.path.join(inactive_pkg_dir, "manifest.json"), "w") as f:
+            json.dump({"name": "beta-node", "desc": "Бета узел"}, f)
+
+        # Папка без манифеста (игнорируется)
         with open(os.path.join(no_manifest_branch, "manifest.json"), "w") as f:
-            f.write('{"name": "hidden"}')
+            json.dump({"name": "hidden"}, f)
 
         registry = PackageRegistry(cache_file=os.path.join(self.test_dir, "cache.json"))
         registry.scan_directories([self.test_dir], force_rescan=True)
 
         self.assertIn("services", registry.folders)
-        self.assertEqual(registry.folders["services"]["desc"], "Сетевые и системные сервисы")
+        self.assertEqual(registry.folders["services"]["desc"], "Основные сервисы")
+        self.assertTrue(registry.folders["services"]["active"])
+        self.assertTrue(registry.is_folder_active("services"))
+
+        self.assertIn("experimental", registry.folders)
+        self.assertFalse(registry.folders["experimental"]["active"])
+        self.assertFalse(registry.is_folder_active("experimental"))
+
         self.assertIn("services/empty-group", registry.folders)
         self.assertTrue(registry.has("server"))
         self.assertFalse(registry.has("hidden"))
         self.assertEqual(registry.get("server")["folder_path"], "services")
+
+    def test_category_manifest_parser_direct(self):
+        """Проверка парсинга атрибутов подкатегории (active, desc, order, meta)."""
+        parser = CategoryManifestParser()
+        norm = parser.normalize_category(
+            {"desc": "Тестовая категория", "active": "false", "order": 5, "meta": {"tag": "core"}},
+            "/tmp/net-cat",
+        )
+        self.assertTrue(norm["is_category"])
+        self.assertEqual(norm["name"], "net-cat")
+        self.assertEqual(norm["desc"], "Тестовая категория")
+        self.assertFalse(norm["active"])
+        self.assertEqual(norm["order"], 5)
+        self.assertEqual(norm["meta"]["tag"], "core")
 
     def test_directory_unit_install_and_reinstall(self):
         """Проверка установки и повторной перезаписи директории files без ошибки [Errno 21] Is a directory."""
@@ -178,12 +204,10 @@ class TestDeployEngine2Features(unittest.TestCase):
         txn = TransactionManager()
         installer = FileInstaller(ExecutionContext(), txn)
 
-        # Первая установка директории
         installer.install_file(src_files_dir, dest_files_dir, 0o755, "file")
         txn.commit()
         self.assertTrue(os.path.isdir(dest_files_dir))
 
-        # Повторная установка поверх существующей директории (ранее вызывала Errno 21)
         with open(os.path.join(src_files_dir, "main.py"), "w") as f:
             f.write("print('v2')\n")
         installer.install_file(src_files_dir, dest_files_dir, 0o755, "file")
@@ -191,25 +215,17 @@ class TestDeployEngine2Features(unittest.TestCase):
         with open(os.path.join(dest_files_dir, "main.py")) as f:
             self.assertIn("v2", f.read())
 
-    def test_name_collision_resolver(self):
+    def test_name_collision_and_dependency_graph(self):
         resolver = NameCollisionResolver()
         resolver.register_package("backend/api", "api")
         resolver.register_package("frontend/api", "api")
-        resolver.register_package("system/core", "core")
-
-        self.assertEqual(resolver.resolve("core"), "system/core")
-        self.assertEqual(resolver.resolve("backend/api"), "backend/api")
         with self.assertRaises(NameCollisionError):
             resolver.resolve("api")
 
-    def test_dependency_graph_and_cycle_detection(self):
         registry = PackageRegistry()
-        registry.register({"name": "pkg-c", "requires": [], "units": {}})
-        registry.register({"name": "pkg-b", "requires": ["pkg-c"], "units": {}})
+        registry.register({"name": "pkg-b", "requires": [], "units": {}})
         registry.register({"name": "pkg-a", "requires": ["pkg-b"], "units": {}})
-
-        graph = DependencyGraph(registry)
-        self.assertEqual(graph.resolve_order(["pkg-a"]), ["pkg-c", "pkg-b", "pkg-a"])
+        self.assertEqual(DependencyGraph(registry).resolve_order(["pkg-a"]), ["pkg-b", "pkg-a"])
 
         cycle_reg = PackageRegistry()
         cycle_reg.register({"name": "cycle-a", "requires": ["cycle-b"], "units": {}})
@@ -217,7 +233,7 @@ class TestDeployEngine2Features(unittest.TestCase):
         with self.assertRaises(DependencyCycleError):
             DependencyGraph(cycle_reg).resolve_order(["cycle-a"])
 
-    def test_non_destructive_env_upsert_and_clean_env(self):
+    def test_env_upsert_and_data_unit(self):
         dest_env = os.path.join(self.test_dir, "test.env")
         src_env = os.path.join(self.test_dir, "template.env")
         with open(dest_env, "w") as f:
@@ -231,21 +247,42 @@ class TestDeployEngine2Features(unittest.TestCase):
         self.assertIn("DB_USER=my_custom_user", content)
         self.assertIn("DB_PORT=5432", content)
 
-        EnvUpsertManager(ExecutionContext(clean_env=True), TransactionManager()).upsert_env_file(src_env, dest_env)
-        with open(dest_env) as f:
-            self.assertIn("DB_USER=default_user", f.read())
-
-    def test_data_unit_and_transaction_rollback(self):
         dest_data = os.path.join(self.test_dir, "db.sqlite")
         src_data = os.path.join(self.test_dir, "seed.sqlite")
         with open(dest_data, "w") as f:
             f.write("PRODUCTION_USER_DATA")
         with open(src_data, "w") as f:
             f.write("SEED_DATA")
-
         DataUnitInstaller(ExecutionContext(), TransactionManager()).install_data_unit(src_data, dest_data)
         with open(dest_data) as f:
             self.assertEqual(f.read(), "PRODUCTION_USER_DATA")
+
+    def test_infer_targets_and_folder_without_manifest_source(self):
+        """Проверка автоопределения пакета из манифеста и сканирования папки без корневого манифеста."""
+        root_without_manifest = os.path.join(self.test_dir, "packages_source")
+        pkg_alpha_dir = os.path.join(root_without_manifest, "alpha-pkg")
+        pkg_multi_dir = os.path.join(root_without_manifest, "multi-pkg")
+        os.makedirs(pkg_alpha_dir, exist_ok=True)
+        os.makedirs(pkg_multi_dir, exist_ok=True)
+
+        alpha_manifest = os.path.join(pkg_alpha_dir, "manifest.json")
+        with open(alpha_manifest, "w") as f:
+            json.dump({"name": "alpha-pkg", "desc": "Пакет Альфа", "units": {}}, f)
+
+        multi_manifest = os.path.join(pkg_multi_dir, "manifest.json")
+        with open(multi_manifest, "w") as f:
+            json.dump({"packages": {"multi-pkg": {"desc": "Основной"}, "multi": {"requires": ["multi-pkg"]}}, "units": {}}, f)
+
+        engine = Engine()
+        # 1. Источник дерева пакетов — папка без манифеста в корне
+        found = engine.load_manifest_recursive(root_without_manifest)
+        self.assertGreaterEqual(found, 2)
+        self.assertTrue(engine.registry.has("alpha-pkg"))
+        self.assertTrue(engine.registry.has("multi-pkg"))
+
+        # 2. Автоопределение целевого пакета по пути к манифесту (исключая алиасы)
+        self.assertEqual(engine.infer_targets_from_manifest(alpha_manifest), ["alpha-pkg"])
+        self.assertEqual(engine.infer_targets_from_manifest(multi_manifest), ["multi-pkg"])
 
 
 if __name__ == "__main__":

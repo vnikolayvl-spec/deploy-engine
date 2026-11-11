@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Кастомный виджет интерактивного иерархического дерева пакетов.
-Строит дерево строго по иерархии папок с manifest.json, отображает описания папок (desc),
-вложенные пакеты и юниты внутри пакетов.
+Строит дерево строго по иерархии подкатегорий и пакетов, скрывает неактивные
+подкатегории (active=False) и по умолчанию оставляет узлы дерева свернутыми.
 """
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
@@ -10,7 +10,17 @@ from lib.state.state_repository import StateRepository
 
 
 class InfrastructureTree(Tree):
-    """Иерархическое дерево каталогов, пакетов и юнитов."""
+    """Иерархическое дерево подкатегорий, пакетов и юнитов."""
+
+    UNIT_ICONS = {
+        "env": "🔐 ENV:",
+        "unit": "⚙️ Служба:",
+        "service": "⚙️ Служба:",
+        "timer": "⏱️ Таймер:",
+        "script": "📜 Скрипт:",
+        "data": "💾 Данные:",
+        "symlink": "🔗 Симлинк:",
+    }
 
     def __init__(self, engine, app_instance, **kwargs):
         super().__init__("Инфраструктура пакетов", **kwargs)
@@ -20,68 +30,70 @@ class InfrastructureTree(Tree):
         installed = state_data.get("installed", {}) or state_data.get("installed_packages", {})
         self.system_state = {"installed_packages": installed, "installed": installed}
 
-    def on_mount(self) -> None:
-        """Построение иерархии дерева по реальной структуре папок и манифестов."""
-        self.root.expand()
+    @staticmethod
+    def _ensure_branch(root_struct: dict, folder_path: str) -> dict:
+        """Создает или возвращает ветку подкатегории в промежуточном словаре дерева."""
+        parts = [p for p in folder_path.split("/") if p and p != "."]
+        curr = root_struct
+        built_parts = []
+        for part in parts:
+            built_parts.append(part)
+            curr = curr["folders"].setdefault(
+                part,
+                {
+                    "folders": {},
+                    "packages": {},
+                    "desc": "",
+                    "active": True,
+                    "order": 100,
+                    "full_path": "/".join(built_parts),
+                },
+            )
+        return curr
 
+    def on_mount(self) -> None:
+        """Построение свернутого по умолчанию дерева подкатегорий и пакетов."""
+        self.root.expand()
         tree_structure = {
             "folders": {},
             "packages": {},
             "desc": "",
+            "active": True,
+            "order": 100,
             "full_path": "",
         }
 
-        # 1. Регистрируем все папки из реестра (включая пустые и содержащие только desc)
+        # 1. Регистрируем все подкатегории из реестра (включая их статус active и desc)
         folders_map = getattr(self.engine, "folders", {})
         for folder_path, f_info in sorted(folders_map.items()):
-            parts = [p for p in folder_path.split("/") if p and p != "."]
-            curr = tree_structure
-            built_parts = []
-            for part in parts:
-                built_parts.append(part)
-                curr = curr["folders"].setdefault(
-                    part,
-                    {
-                        "folders": {},
-                        "packages": {},
-                        "desc": "",
-                        "full_path": "/".join(built_parts),
-                    },
-                )
+            curr = self._ensure_branch(tree_structure, folder_path)
             if f_info.get("desc"):
                 curr["desc"] = f_info["desc"]
+            if "active" in f_info:
+                curr["active"] = bool(f_info["active"])
+            if "order" in f_info:
+                curr["order"] = int(f_info["order"])
 
-        # 2. Размещаем пакеты в соответствующие папки согласно их folder_path
+        # 2. Размещаем активные пакеты в соответствующие подкатегории согласно их folder_path
         for reg_key, p_info in sorted(self.engine.packages.items()):
-            if p_info.get("is_alias"):
+            if p_info.get("is_alias") or not p_info.get("active", True):
                 continue
-
-            folder_path = p_info.get("folder_path", "")
-            parts = [p for p in folder_path.split("/") if p and p != "."]
-            curr = tree_structure
-            built_parts = []
-            for part in parts:
-                built_parts.append(part)
-                curr = curr["folders"].setdefault(
-                    part,
-                    {
-                        "folders": {},
-                        "packages": {},
-                        "desc": "",
-                        "full_path": "/".join(built_parts),
-                    },
-                )
+            curr = self._ensure_branch(tree_structure, p_info.get("folder_path", ""))
             pkg_name = p_info.get("name", reg_key.split("/")[-1])
             curr["packages"][pkg_name] = (reg_key, p_info)
 
-        # 3. Рекурсивно монтируем узлы папок, пакетов и их юнитов
+        # 3. Рекурсивно монтируем узлы (по умолчанию все папки и пакеты свернуты)
         self._mount_directory_branch(self.root, tree_structure)
 
     def _mount_directory_branch(self, parent_node: TreeNode, branch_dict: dict) -> None:
-        """Монтирует ветку папок и пакетов в дерево."""
+        """Монтирует ветку активных подкатегорий и пакетов в дерево (в свернутом виде)."""
         folders = branch_dict.get("folders", {})
-        for folder_name in sorted(folders.keys()):
-            f_node_data = folders[folder_name]
+        sorted_folders = sorted(folders.items(), key=lambda item: (item[1].get("order", 100), item[0]))
+
+        for folder_name, f_node_data in sorted_folders:
+            if not f_node_data.get("active", True):
+                continue
+
             f_desc = f_node_data.get("desc", "")
             desc_suffix = f" ({f_desc})" if f_desc else ""
             full_path = f_node_data.get("full_path") or folder_name
@@ -96,13 +108,15 @@ class InfrastructureTree(Tree):
                     "folder_action": "none",
                 },
             )
-            folder_node.expand()
             self._mount_directory_branch(folder_node, f_node_data)
 
         packages = branch_dict.get("packages", {})
         installed_map = self.system_state.get("installed", {})
 
         for pkg_name, (reg_key, p_info) in sorted(packages.items()):
+            if not p_info.get("active", True):
+                continue
+
             is_installed = (pkg_name in installed_map) or (reg_key in installed_map)
             desc = p_info.get("description") or p_info.get("desc") or ""
             desc_str = f" ({desc})" if desc else ""
@@ -114,27 +128,17 @@ class InfrastructureTree(Tree):
 
             pkg_node = parent_node.add(
                 label,
-                data={
-                    "key": reg_key,
-                    "pkg_name": pkg_name,
-                    "is_package": True,
-                    "is_folder": False,
-                },
+                data={"key": reg_key, "pkg_name": pkg_name, "is_package": True, "is_folder": False},
             )
-
             self._mount_package_units(pkg_node, pkg_name, p_info)
 
     def _mount_package_units(self, pkg_node: TreeNode, pkg_name: str, p_info: dict) -> None:
         """Добавляет юниты пакета как дочерние элементы под узлом пакета."""
-        units = p_info.get("units", {})
-        if not units:
-            return
-
-        for u_name, u_spec in sorted(units.items()):
+        for u_name, u_spec in sorted((p_info.get("units") or {}).items()):
             u_spec = u_spec or {}
             u_type = u_spec.get("type")
             if not u_type:
-                if u_name.endswith(".sh") or u_name.endswith(".py"):
+                if u_name.endswith((".sh", ".py")):
                     u_type = "script"
                 elif u_name.endswith(".service"):
                     u_type = "service"
@@ -147,27 +151,11 @@ class InfrastructureTree(Tree):
                 else:
                     u_type = "file"
 
-            if u_type == "env":
-                icon = "🔐 ENV:"
-            elif u_type in ["unit", "service"]:
-                icon = "⚙️ Служба:"
-            elif u_type == "timer":
-                icon = "⏱️ Таймер:"
-            elif u_type == "script":
-                icon = "📜 Скрипт:"
-            elif u_type == "data":
-                icon = "💾 Данные:"
-            elif u_type == "symlink":
-                icon = "🔗 Симлинк:"
-            else:
-                icon = "📄 Файл:"
-
+            icon = self.UNIT_ICONS.get(u_type, "📄 Файл:")
             u_desc = u_spec.get("desc", "")
             u_desc_str = f" ({u_desc})" if u_desc else ""
-            unit_label = f"[ ] {icon} {u_name}{u_desc_str}"
-
             pkg_node.add(
-                unit_label,
+                f"[ ] {icon} {u_name}{u_desc_str}",
                 data={
                     "key": f"{pkg_name}:{u_name}",
                     "is_package": False,
@@ -193,9 +181,8 @@ class InfrastructureTree(Tree):
         elif key_name == "left":
             if is_container and node.is_expanded:
                 node.collapse()
-            else:
-                if node.parent and node.parent != self.root:
-                    self.select_node(node.parent)
+            elif node.parent and node.parent != self.root:
+                self.select_node(node.parent)
 
     def handle_space_press(self) -> None:
         """Переключает статус действия для текущего пакета или папки через Пробел."""
@@ -203,7 +190,6 @@ class InfrastructureTree(Tree):
         if not node or not node.data:
             return
 
-        # Если выбор сделан на юните внутри пакета — переключаем родительский пакет
         if not node.data.get("is_package") and not node.data.get("is_folder"):
             if node.parent and node.parent.data and node.parent.data.get("is_package"):
                 node = node.parent
@@ -224,10 +210,7 @@ class InfrastructureTree(Tree):
                 else:
                     next_action = "none"
             else:
-                if current_action == "none":
-                    next_action = "install"
-                else:
-                    next_action = "none"
+                next_action = "install" if current_action == "none" else "none"
 
             self._set_action_recursive(node, next_action)
             self.app_ref.render_live_preview()
@@ -240,14 +223,10 @@ class InfrastructureTree(Tree):
             self.app_ref.render_live_preview()
 
     def _set_action_recursive(self, node: TreeNode, action_type: str) -> None:
-        """
-        Рекурсивно меняет текстовые маркеры узлов и записывает в self.app_ref.actions
-        ТОЛЬКО реальные пакеты (is_package=True), исключая папки и дочерние юниты.
-        """
+        """Рекурсивно меняет маркеры узлов и записывает в actions только пакеты."""
         if not node.data:
             return
 
-        # Записываем в план действий только пакеты!
         if node.data.get("is_package"):
             pkg_key = node.data.get("key")
             pkg_name = node.data.get("pkg_name", pkg_key)
@@ -266,14 +245,8 @@ class InfrastructureTree(Tree):
         elif node.data.get("is_folder"):
             node.data["folder_action"] = action_type
 
-        marker = "[ ]"
-        if action_type == "install":
-            marker = "[+]"
-        elif action_type == "reinstall":
-            marker = "[↻]"
-        elif action_type == "uninstall":
-            marker = "[-]"
-
+        markers = {"install": "[+]", "reinstall": "[↻]", "uninstall": "[-]"}
+        marker = markers.get(action_type, "[ ]")
         current_label = str(node.label)
         for old_m in ["[ ]", "[+]", "[↻]", "[-]"]:
             if current_label.startswith(old_m):

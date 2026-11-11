@@ -55,7 +55,7 @@ class Engine:
 
     @property
     def folders(self) -> Dict[str, Dict[str, Any]]:
-        """Доступ к зарегистрированным папкам и их метаданным (desc)."""
+        """Доступ к зарегистрированным подкатегориям/папкам и их метаданным."""
         return self.registry.folders
 
     @property
@@ -75,8 +75,12 @@ class Engine:
                 all_units[f"{ns}:{u_name}"] = enriched
         return all_units
 
-    def discover_packages(self, search_roots: Optional[List[str]] = None, force_rescan: bool = False) -> int:
-        """Обнаруживает и регистрирует пакеты и папки в реестре."""
+    def discover_packages(
+        self,
+        search_roots: Optional[List[str]] = None,
+        force_rescan: bool = False,
+    ) -> int:
+        """Обнаруживает и регистрирует пакеты и подкатегории (включая папки без корневого манифеста)."""
         if search_roots:
             valid_roots = [r for r in search_roots if os.path.exists(r)]
         else:
@@ -92,9 +96,33 @@ class Engine:
 
         return self.registry.scan_directories(valid_roots, force_rescan=force_rescan)
 
-    def load_manifest_recursive(self, manifest_path: str) -> None:
-        """Обратная совместимость: прямая загрузка файла манифеста."""
-        self.registry.load_legacy_manifest(manifest_path)
+    def load_manifest_recursive(self, manifest_or_dir: str) -> int:
+        """Прямая загрузка файла манифеста или корневой папки дерева пакетов (без манифеста)."""
+        if os.path.isdir(manifest_or_dir):
+            return self.discover_packages(search_roots=[manifest_or_dir], force_rescan=True)
+        self.registry.load_legacy_manifest(manifest_or_dir)
+        return len(self.registry.packages)
+
+    def infer_targets_from_manifest(self, manifest_path: str) -> List[str]:
+        """Определяет имена пакетов непосредственно из указанного файла манифеста пакета."""
+        if not manifest_path or not os.path.isfile(manifest_path):
+            return []
+        try:
+            parsed = self.registry.parser.parse_file(manifest_path)
+        except Exception:
+            return []
+
+        if parsed.get("is_category") or parsed.get("is_folder_only"):
+            return []
+
+        if parsed.get("is_multi_package"):
+            pkgs = parsed.get("packages", {})
+            non_aliases = [name for name, p in pkgs.items() if not p.get("is_alias")]
+            return non_aliases if non_aliases else list(pkgs.keys())
+
+        if parsed.get("name"):
+            return [parsed["name"]]
+        return []
 
     def load_default_manifests(self) -> int:
         """Обратная совместимость для TUI: переобход и загрузка дерева пакетов."""
@@ -128,19 +156,13 @@ class Engine:
 
     def get_paths_and_modes(self, unit_ref: str):
         """Обратная совместимость: возвращает (src, dest, mode, unit_type)."""
-        if ":" in unit_ref:
-            pkg_name, unit_name = unit_ref.split(":", 1)
-        else:
-            pkg_name, unit_name = unit_ref, unit_ref
+        pkg_name, unit_name = unit_ref.split(":", 1) if ":" in unit_ref else (unit_ref, unit_ref)
         pkg = self.registry.get(pkg_name)
         unit_spec = pkg.get("units", {}).get(unit_name, {})
-        pkg_base_dir = pkg.get("base_dir")
-        return self.path_resolver.resolve(pkg["name"], unit_name, unit_spec, pkg_base_dir)
+        return self.path_resolver.resolve(pkg["name"], unit_name, unit_spec, pkg.get("base_dir"))
 
     def install_packages(self, targets: List[str]) -> bool:
-        """
-        Транзакционная безопасная установка нескольких пакетов с автоматическим откатом.
-        """
+        """Транзакционная безопасная установка нескольких пакетов с автоматическим откатом."""
         valid_targets = [t for t in targets if self.registry.has(t)]
         if not valid_targets:
             return False
@@ -148,7 +170,6 @@ class Engine:
         ordered_packages = self.dep_graph.resolve_order(valid_targets)
         self.context.log(f"📋 Порядок установки пакетов: {' -> '.join(ordered_packages)}")
 
-        # 1. Агрегация и пакетная установка системных зависимостей ОС
         all_sys_pkgs: List[str] = []
         for pkg_name in ordered_packages:
             all_sys_pkgs.extend(self.registry.get(pkg_name).get("sys_packages", []))
@@ -156,14 +177,11 @@ class Engine:
             self.sys_manager.install_packages(all_sys_pkgs)
 
         try:
-            # 2. Установка каждого пакета в топологическом порядке
             for pkg_name in ordered_packages:
                 self._install_single_package(pkg_name)
-
             self.txn.commit()
             self.context.log("🎉 Все пакеты успешно установлены!")
             return True
-
         except Exception as err:
             self.context.log(f"💥 Сбой при установке пакетов: {err}")
             self.context.log("⏪ Запуск отката транзакции (LIFO)...")
@@ -182,13 +200,10 @@ class Engine:
         root_dir = os.path.dirname(base_dir)
         self.context.log(f"\n🚀 Развертывание пакета: {canonical_name} (версия {pkg.get('version', '1.0.0')})")
 
-        # Python & Node dependencies
         if pkg.get("python_packages"):
             self.py_manager.install(pkg["python_packages"], base_dir)
         if pkg.get("node_packages"):
             self.node_manager.install(pkg["node_packages"], base_dir)
-
-        # Pre-install hook
         if pkg.get("pre_install"):
             self.hook_executor.run_hook("pre_install", pkg["pre_install"], canonical_name, base_dir)
 
@@ -200,12 +215,10 @@ class Engine:
             "{{SYS_SYSTEMD}}": SYS_SYSTEMD,
         }
 
-        # Units deployment
         for unit_name, unit_spec in pkg.get("units", {}).items():
             src_path, dest_path, mode, unit_type = self.path_resolver.resolve(
                 canonical_name, unit_name, unit_spec, base_dir
             )
-
             if unit_type == "env":
                 self.env_manager.upsert_env_file(src_path, dest_path)
             else:
@@ -218,22 +231,15 @@ class Engine:
                     for marker, real_val in context_vars.items():
                         symlink_target = str(symlink_target).replace(marker, real_val)
                 self.file_installer.install_file(
-                    src_path,
-                    dest_path,
-                    mode,
-                    unit_type,
-                    symlink_target,
-                    context_vars=context_vars,
+                    src_path, dest_path, mode, unit_type, symlink_target, context_vars=context_vars
                 )
 
             installed_files.append(dest_path)
             self.deployed_files_map[dest_path] = unit_type
 
-        # Post-install hook
         if pkg.get("post_install"):
             self.hook_executor.run_hook("post_install", pkg["post_install"], canonical_name, base_dir)
 
-        # Запись в репозиторий состояния
         self.state_repo.mark_installed(canonical_name, pkg.get("version", "1.0.0"), installed_files, pkg.get("namespace"))
 
     def install_files(self) -> None:
@@ -251,11 +257,9 @@ class Engine:
         base_dir = pkg_info.get("base_dir", ".") if pkg_info else "."
         self.context.log(f"\n🗑️ Удаление пакета: {canonical_name}")
 
-        # Pre-uninstall hook
         if pkg_info and pkg_info.get("pre_uninstall"):
             self.hook_executor.run_hook("pre_uninstall", pkg_info["pre_uninstall"], canonical_name, base_dir)
 
-        # Удаление файлов из состояния или манифеста
         state_entry = self.state_repo.get_installed_package(canonical_name)
         files_to_remove = state_entry.get("files", []) if state_entry else []
 
@@ -271,11 +275,9 @@ class Engine:
                 continue
             self.file_installer.remove_file(dest_file)
 
-        # Очистка ENV и данных с учетом purge
         self.env_manager.remove_env(canonical_name, purge=self.context.purge)
         self.file_installer.data_installer.remove_data(canonical_name, purge=self.context.purge)
 
-        # Post-uninstall hook
         if pkg_info and pkg_info.get("post_uninstall"):
             self.hook_executor.run_hook("post_uninstall", pkg_info["post_uninstall"], canonical_name, base_dir)
 
