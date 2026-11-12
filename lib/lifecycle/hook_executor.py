@@ -1,18 +1,24 @@
 """
-Hook executor running pre- and post-install/uninstall commands.
+Hook executor running pre- and post-install/uninstall commands with cross-platform provider support.
 """
 import subprocess
 from typing import List, Optional, Union
 from lib.core.deploy_engine_error import DeployEngineError
 from lib.core.execution_context import ExecutionContext
 from lib.lifecycle.hook_context import HookContext
+from lib.providers.base_provider import BaseEnvironmentProvider
 
 
 class HookExecutor:
-    """Исполнитель хуков жизненного цикла пакета с поддержкой строк, списков команд и dry-run."""
+    """Исполнитель хуков жизненного цикла пакета с поддержкой провайдера окружения и dry-run."""
 
-    def __init__(self, context: Optional[ExecutionContext] = None):
+    def __init__(
+        self,
+        context: Optional[ExecutionContext] = None,
+        provider: Optional[BaseEnvironmentProvider] = None,
+    ):
         self.context = context or ExecutionContext()
+        self.provider = provider
 
     def run_hook(
         self,
@@ -23,7 +29,7 @@ class HookExecutor:
     ) -> bool:
         """
         Запускает хук (pre_install, post_install, pre_uninstall, post_uninstall).
-        Поддерживает как одиночную команду (str), так и массив команд (List[str]).
+        Поддерживает одиночную команду (str) и массив команд (List[str]).
         """
         if not command_or_script:
             return True
@@ -33,7 +39,8 @@ class HookExecutor:
             if isinstance(command_or_script, list)
             else [str(command_or_script)]
         )
-        hook_ctx = HookContext(pkg_name, pkg_dir)
+        hook_ctx = HookContext(pkg_name, pkg_dir, provider=self.provider)
+        hook_env = self.provider.get_hook_env() if self.provider else None
 
         for cmd_tpl in commands:
             if not cmd_tpl:
@@ -51,6 +58,7 @@ class HookExecutor:
                     shell=True,
                     check=True,
                     cwd=pkg_dir,
+                    env=hook_env,
                 )
                 if res.returncode != 0:
                     return False

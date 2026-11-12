@@ -34,31 +34,14 @@ class CategoryManifestParser:
     @classmethod
     def is_category_manifest(cls, raw_data: Dict[str, Any], filename: str = "manifest.json") -> bool:
         """
-        Определяет, является ли JSON-объект манифестом подкатегории (а не пакета).
+        Определяет, является ли файл манифестом категории.
+        Для директорий используется строго category.json.
         """
         if os.path.basename(filename) in cls.CATEGORY_FILENAMES:
             return True
-
-        manifest_type = str(raw_data.get("type") or raw_data.get("kind") or "").strip().lower()
-        if manifest_type in ("category", "subcategory", "folder"):
-            return True
-        if manifest_type == "package":
-            return False
-
         if raw_data.get("is_category") is True:
             return True
-
-        # Если нет ни одного специфичного ключа пакета и нет поля name (либо заданы только поля категории)
-        has_pkg_keys = any(k in raw_data and raw_data[k] for k in cls.PACKAGE_INDICATOR_KEYS)
-        if has_pkg_keys:
-            return False
-
-        # Если есть поле name без других полей пакета и без флага active/type="category",
-        # проверяем: если присутствует active/enabled/order/meta или нет name — это категория
-        if "name" in raw_data and not any(k in raw_data for k in ("active", "enabled", "order", "meta", "title")):
-            return False
-
-        return True
+        return False
 
     @staticmethod
     def parse_bool(value: Any, default: bool = True) -> bool:
@@ -116,6 +99,14 @@ class CategoryManifestParser:
         if not isinstance(meta, dict):
             meta = {}
 
+        raw_platforms = raw_data.get("platforms") if "platforms" in raw_data else raw_data.get("os")
+        if isinstance(raw_platforms, str):
+            platforms = [p.strip().lower() for p in raw_platforms.split(",") if p.strip()]
+        elif isinstance(raw_platforms, list):
+            platforms = [str(p).strip().lower() for p in raw_platforms if str(p).strip()]
+        else:
+            platforms = []
+
         return {
             "type": "category",
             "is_category": True,
@@ -126,6 +117,7 @@ class CategoryManifestParser:
             "desc": desc,
             "description": desc,
             "active": active,
+            "platforms": platforms,
             "order": order,
             "meta": dict(meta),
             "includes": list(raw_data.get("includes", [])),

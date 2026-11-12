@@ -106,6 +106,7 @@ state.json
 # Versioning & release metadata (not committed)
 COMMIT.txt
 CHANGELOG.txt
+BACKLOG.md
 
 # Archive artifacts
 *.tar.gz

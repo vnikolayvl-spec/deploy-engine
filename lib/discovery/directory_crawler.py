@@ -9,29 +9,49 @@ class DirectoryCrawler:
     """
     Рекурсивный обход дерева папок для построения иерархии категорий и пакетов.
     Правила обхода:
-    - Папки, в которых нет файла category.json или manifest.json, полностью игнорируются.
-    - Папки с category.json или manifest.json регистрируются, и обход продолжается
-      во вложенные подпапки, содержащие собственный манифест категории или пакета.
+    - Для описания категорий используется строго category.json (необязателен, если достаточно имени папки).
+    - Для описания пакетов используется строго manifest.json.
+    - Промежуточные папки без category.json автоматически обходятся, если внутри них на любой глубине есть пакеты или подкатегории.
     """
 
     MANIFEST_FILES = ("category.json", "manifest.json")
+    IGNORED_DIRS = {"__pycache__", "node_modules", "venv", ".venv", "files", "data", "env", ".git", ".idea", ".vscode"}
 
     def __init__(self, search_roots: Optional[List[str]] = None):
         self.search_roots = search_roots or []
 
     @classmethod
+    def _is_ignored_dir(cls, dirname: str) -> bool:
+        return dirname.startswith(".") or dirname in cls.IGNORED_DIRS
+
+    @classmethod
     def _find_manifest_in_dir(cls, dir_path: str) -> Optional[str]:
-        """Возвращает путь к файлу манифеста в папке (приоритет: manifest.json, затем category.json)."""
+        """Возвращает путь к manifest.json или category.json в папке."""
         for fname in ("manifest.json", "category.json"):
             candidate = os.path.join(dir_path, fname)
             if os.path.isfile(candidate):
                 return candidate
         return None
 
+    @classmethod
+    def _has_manifests_in_subtree(cls, dir_path: str) -> bool:
+        """Проверяет, есть ли в данной папке или её подпапках хотя бы один manifest.json или category.json."""
+        if cls._find_manifest_in_dir(dir_path) is not None:
+            return True
+        try:
+            for _, subdirs, filenames in os.walk(dir_path, topdown=True):
+                if "manifest.json" in filenames or "category.json" in filenames:
+                    return True
+                subdirs[:] = [d for d in subdirs if not cls._is_ignored_dir(d)]
+        except OSError:
+            return False
+        return False
+
     def crawl_directory(self, root_dir: str) -> Dict[str, str]:
         """
-        Рекурсивно обходит root_dir по дереву папок с манифестами.
-        Возвращает словарь {относительный_путь_папки: абсолютный_путь_к_манифесту}.
+        Рекурсивно обходит root_dir по дереву папок любой вложенности.
+        Возвращает словарь {относительный_путь: абсолютный_путь_к_файлу}.
+        Если в папке есть и category.json, и manifest.json, оба регистрируются.
         """
         discovered: Dict[str, str] = {}
         abs_root = os.path.abspath(root_dir)
@@ -40,16 +60,24 @@ class DirectoryCrawler:
             return discovered
 
         for current_dir, subdirs, _ in os.walk(abs_root, topdown=True):
-            manifest_path = self._find_manifest_in_dir(current_dir)
-            if manifest_path:
-                rel_path = os.path.relpath(current_dir, abs_root)
-                namespace = rel_path.replace(os.sep, "/") if rel_path != "." else "."
-                discovered[namespace] = manifest_path
+            rel_path = os.path.relpath(current_dir, abs_root)
+            namespace = rel_path.replace(os.sep, "/") if rel_path != "." else "."
 
-            # Игнорируем папки, в которых нет ни manifest.json, ни category.json
+            cat_path = os.path.join(current_dir, "category.json")
+            pkg_path = os.path.join(current_dir, "manifest.json")
+
+            if os.path.isfile(cat_path) and os.path.isfile(pkg_path):
+                if namespace != ".":
+                    discovered[f"{namespace}#category"] = cat_path
+                discovered[namespace] = pkg_path
+            elif os.path.isfile(pkg_path):
+                discovered[namespace] = pkg_path
+            elif os.path.isfile(cat_path):
+                discovered[namespace] = cat_path
+
             subdirs[:] = sorted([
                 d for d in subdirs
-                if not d.startswith(".") and self._find_manifest_in_dir(os.path.join(current_dir, d)) is not None
+                if not self._is_ignored_dir(d) and self._has_manifests_in_subtree(os.path.join(current_dir, d))
             ])
 
         return discovered

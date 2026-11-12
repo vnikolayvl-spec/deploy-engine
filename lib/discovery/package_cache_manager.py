@@ -34,7 +34,7 @@ class PackageCacheManager:
     def save_cache(
         self,
         packages_index: Dict[str, Any],
-        version: str = "2.1.0",
+        version: str = "2.2.0",
         folders_index: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Сохраняет метаданные и структуру пакетов и папок в packages.json атомарно."""

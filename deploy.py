@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Deploy Engine 2.0 CLI Interface.
+Deploy Engine CLI Interface with cross-platform providers and optional --sandbox [target_os].
 """
 import argparse
 import os
@@ -12,14 +12,14 @@ from lib.remote.remote_deployer import RemoteDeployer
 from lib.state.package_inspector import PackageInspector
 from lib.utils import check_root
 
-VALID_ACTIONS = {"install", "uninstall", "reinstall", "list", "scan", "help"}
+VALID_ACTIONS = {"install", "uninstall", "reinstall", "list", "info", "scan", "help"}
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Создает парсер аргументов командной строки."""
     parser = argparse.ArgumentParser(
         prog="deploy.py",
-        description="Deploy Engine: Модульный автономный оркестратор развертывания пакетов.",
+        description="Deploy Engine: Модульный кроссплатформенный оркестратор развертывания пакетов.",
         formatter_class=argparse.RawTextHelpFormatter,
     )
 
@@ -28,12 +28,21 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default="help",
         choices=list(VALID_ACTIONS),
-        help="Действие: install | uninstall | reinstall | list | scan",
+        help="Действие: install | uninstall | reinstall | list | info | scan",
     )
     parser.add_argument(
         "targets",
         nargs="*",
         help="Имена пакетов или пространств имен (необязательно, если указан манифест пакета)",
+    )
+    parser.add_argument(
+        "--info",
+        "-i",
+        dest="info_flag",
+        nargs="?",
+        const="__FLAG_ONLY__",
+        default=None,
+        help="Показать описание пакета, статус и пути установки в системе",
     )
     parser.add_argument(
         "--manifest",
@@ -50,6 +59,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Путь к папке-источнику дерева пакетов (папка может быть без собственного манифеста)",
     )
     parser.add_argument(
+        "--sandbox",
+        dest="sandbox_os",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="Тестовый режим песочницы с опциональным выбором эмулируемой ОС (debian, ubuntu, alpine, arch, macos)",
+    )
+    parser.add_argument(
+        "--sandbox-dir",
+        dest="sandbox_dir",
+        default=None,
+        help="Путь к директории локальной песочницы (по умолчанию ./.de_sandbox)",
+    )
+    parser.add_argument(
         "--dry-run",
         "-n",
         dest="dry_run",
@@ -60,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--purge",
         dest="purge",
         action="store_true",
-        help="Полное удаление каталогов ENV и Data (/var/lib/de_{pkg}) при удалении",
+        help="Полное удаление каталогов ENV и Data при удалении",
     )
     parser.add_argument(
         "--clean-env",
@@ -100,14 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def parse_legacy_arguments(raw_args):
     """
-    Поддержка позиционного указания манифеста или папки пакетов:
-    deploy.py <manifest_path_or_dir> [action] [targets_and_flags...]
+    Поддержка позиционного указания манифеста, папки пакетов или имени пакета с --info:
+    deploy.py <manifest_path_or_dir_or_pkg> [action] [targets_and_flags...]
     """
     if len(raw_args) >= 1 and raw_args[0] not in VALID_ACTIONS and not raw_args[0].startswith("-"):
         if raw_args[0].endswith(".json") or os.path.exists(raw_args[0]):
             manifest_or_dir = raw_args[0]
             remaining = raw_args[1:]
-            action = "install"
+            action = "info" if ("--info" in remaining or "-i" in remaining) else "install"
             filtered_remaining = []
             found_action = False
             for token in remaining:
@@ -117,6 +140,8 @@ def parse_legacy_arguments(raw_args):
                 else:
                     filtered_remaining.append(token)
             return manifest_or_dir, action, filtered_remaining
+        if "--info" in raw_args or "-i" in raw_args:
+            return None, "info", raw_args
     return None, None, None
 
 
@@ -132,14 +157,20 @@ def main():
             args.packages_dir = legacy_source
         else:
             args.manifest = legacy_source
+    elif legacy_action == "info":
+        args = parser.parse_args(["info"] + legacy_rest)
     else:
         args = parser.parse_args()
+
+    if args.info_flag is not None:
+        args.action = "info"
+        if args.info_flag != "__FLAG_ONLY__" and args.info_flag not in args.targets:
+            args.targets.insert(0, args.info_flag)
 
     if args.action == "help" or (not raw_args and args.action == "help"):
         parser.print_help()
         sys.exit(0)
 
-    # Если в качестве единственного позиционного target передан путь к manifest.json или папке
     if not args.manifest and not args.packages_dir and len(args.targets) == 1:
         single_target = args.targets[0]
         if os.path.isfile(single_target) and single_target.endswith(".json"):
@@ -149,7 +180,6 @@ def main():
             args.packages_dir = single_target
             args.targets = []
 
-    # Если в --manifest передана папка без манифестов, используем ее как источник дерева пакетов
     if args.manifest and os.path.isdir(args.manifest):
         args.packages_dir = args.manifest
         args.manifest = None
@@ -162,17 +192,18 @@ def main():
         remote=args.remote,
         rescan=args.rescan,
         json_output=args.json_output,
+        sandbox=bool(args.sandbox_os is not None or args.sandbox_dir is not None),
+        sandbox_os=args.sandbox_os,
+        sandbox_dir=args.sandbox_dir,
     )
 
     engine = Engine(context)
 
-    # Автоматическое определение имени пакета из манифеста пакета, если targets не заданы
-    if args.manifest and not args.targets and args.action in ("install", "uninstall", "reinstall"):
+    if args.manifest and not args.targets and args.action in ("install", "uninstall", "reinstall", "info"):
         inferred = engine.infer_targets_from_manifest(args.manifest)
         if inferred:
             args.targets = inferred
 
-    # Удаленный режим через SSH
     if args.remote:
         deployer = RemoteDeployer(args.remote, context)
         if args.action == "list":
@@ -189,26 +220,15 @@ def main():
                     for k, v in installed.items():
                         print(f"  • {k} (версия {v.get('version', 'N/A')})")
             return
-        else:
-            if not args.targets:
-                print("❌ Ошибка: Укажите имена пакетов для удаленной операции.")
-                sys.exit(1)
-            deployer.execute_remote(args.targets, args.action)
-            return
-
-    # Локальная инспекция установленных пакетов (не требует root)
-    if args.action == "list":
-        inspector = PackageInspector()
-        if args.json_output:
-            print(inspector.to_json())
-        else:
-            print(inspector.format_table())
+        if not args.targets:
+            print("❌ Ошибка: Укажите имена пакетов для удаленной операции.")
+            sys.exit(1)
+        deployer.execute_remote(args.targets, args.action)
         return
 
-    # Загрузка дерева пакетов (из манифеста пакета, указанной папки без манифеста или папок по умолчанию)
     if args.manifest:
         engine.load_manifest_recursive(args.manifest)
-        if not args.targets and args.action in ("install", "uninstall", "reinstall"):
+        if not args.targets and args.action in ("install", "uninstall", "reinstall", "info"):
             args.targets = engine.infer_targets_from_manifest(args.manifest)
     elif args.packages_dir:
         pkg_count = engine.discover_packages(search_roots=[args.packages_dir], force_rescan=True)
@@ -221,11 +241,27 @@ def main():
             print(f"✅ База пакетов успешно обновлена. Обнаружено пакетов: {pkg_count} (сохранено в packages.json).")
             return
 
+    if args.action == "list":
+        inspector = PackageInspector(state_repo=engine.state_repo, engine=engine)
+        print(inspector.to_json() if args.json_output else inspector.format_table())
+        return
+
+    if args.action == "info":
+        if not args.targets:
+            print("❌ Ошибка: Укажите имя пакета для просмотра информации (например: deploy.py info <пакет> или deploy.py --info <пакет>).")
+            sys.exit(1)
+        inspector = PackageInspector(state_repo=engine.state_repo, engine=engine)
+        if args.json_output:
+            print(inspector.info_to_json(args.targets))
+        else:
+            print("\n\n".join(inspector.format_package_info(t) for t in args.targets))
+        return
+
     if not args.targets:
         print(f"❌ Ошибка: Не указано имя пакета для операции '{args.action}'.")
         sys.exit(1)
 
-    if not args.dry_run:
+    if not args.dry_run and engine.provider.requires_root():
         check_root()
 
     try:

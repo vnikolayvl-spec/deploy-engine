@@ -1,12 +1,12 @@
 """
-Non-destructive ENV upsert manager.
+Non-destructive ENV upsert manager supporting local presets in ./env/ without modifying package repos.
 """
 import os
 import re
 import shutil
 import sys
-from typing import Optional
-from deploy_config import ENV_PATH, ENV_PREFIX
+from typing import Dict, Optional
+from deploy_config import ENV_PATH, ENV_PREFIX, LOCAL_ENV_DIR
 from lib.core.execution_context import ExecutionContext
 from lib.env.env_parser import EnvParser
 from lib.env.secret_masker import SecretMasker
@@ -14,34 +14,71 @@ from lib.installer.transaction_manager import TransactionManager
 
 
 class EnvUpsertManager:
-    """Неразрушающее обновление переменных окружения (ENV upsert)."""
+    """
+    Неразрушающее обновление переменных окружения (ENV upsert).
+    Поддерживает чтение и сохранение пользовательских предустановок в папке ./env/,
+    чтобы не изменять исходные файлы в репозитории пакетов и не задавать повторно вопросы.
+    """
 
     def __init__(
         self,
         context: Optional[ExecutionContext] = None,
         transaction_manager: Optional[TransactionManager] = None,
+        provider=None,
+        local_env_dir: Optional[str] = None,
     ):
         self.context = context or ExecutionContext()
         self.transaction_manager = transaction_manager or TransactionManager()
+        self.provider = provider
+        self.local_env_dir = local_env_dir or LOCAL_ENV_DIR
         self.parser = EnvParser()
         self.masker = SecretMasker()
 
     def get_env_dir(self, pkg_name: str) -> str:
-        """Возвращает каталог окружения пакета (/etc/default/de_{pkg})."""
-        return os.path.join(ENV_PATH, f"{ENV_PREFIX}{pkg_name}")
+        """Возвращает системный каталог окружения пакета с учетом провайдера ОС."""
+        env_base = self.provider.get_paths()["env_path"] if self.provider else ENV_PATH
+        return os.path.join(env_base, f"{ENV_PREFIX}{pkg_name}")
 
-    def upsert_env_file(self, src_path: str, dest_path: str) -> bool:
+    def get_local_preset_path(self, pkg_name: str) -> str:
+        """Возвращает путь к локальному файлу предустановок ./env/<pkg_name>.env."""
+        return os.path.abspath(os.path.join(self.local_env_dir, f"{pkg_name}.env"))
+
+    def save_local_preset(self, pkg_name: str, template_path: str, values: Dict[str, str]) -> str:
+        """
+        Сохраняет отредактированные в TUI переменные в ./env/<pkg_name>.env,
+        не затрагивая исходный файл шаблона в репозитории пакетов.
+        """
+        preset_path = self.get_local_preset_path(pkg_name)
+        os.makedirs(os.path.dirname(preset_path), exist_ok=True)
+        rendered = self.parser.render_with_values(template_path, values)
+        with open(preset_path, "w", encoding="utf-8") as f:
+            f.write(rendered)
+        os.chmod(preset_path, 0o600)
+        return preset_path
+
+    @staticmethod
+    def _infer_pkg_name_from_dest(dest_path: str) -> Optional[str]:
+        """Определяет имя пакета из целевого пути вида .../de_<pkg>/<pkg>.env."""
+        parent = os.path.basename(os.path.dirname(dest_path))
+        if parent.startswith(ENV_PREFIX):
+            return parent[len(ENV_PREFIX) :]
+        fname = os.path.basename(dest_path)
+        if fname.endswith(".env") and fname != "deploy.env":
+            return fname[:-4]
+        return None
+
+    def upsert_env_file(self, src_path: str, dest_path: str, pkg_name: Optional[str] = None) -> bool:
         """
         Обновляет целевой .env:
-        - Если файл не существует, создается из шаблона.
-        - Если существует и context.clean_env=True, сбрасывается к заводским настройкам.
-        - Если существует и context.clean_env=False, дописываются только НОВЫЕ переменные.
-          Существующие пользовательские значения и секреты не изменяются.
+        - Если в ./env/<pkg>.env есть сохраненная предустановка, берет значения из нее без опроса пользователя.
+        - Если целевой файл существует и clean_env=False, дописывает только новые переменные.
         """
         dest_dir = os.path.dirname(dest_path)
+        inferred_pkg = pkg_name or self._infer_pkg_name_from_dest(dest_path)
+        preset_path = self.get_local_preset_path(inferred_pkg) if inferred_pkg else None
+        effective_src = preset_path if (preset_path and os.path.isfile(preset_path)) else src_path
 
-        # Читаем шаблон
-        src_keys, src_lines = self.parser.parse_file(src_path)
+        src_keys, src_lines = self.parser.parse_file(effective_src)
 
         if self.context.dry_run:
             if not os.path.exists(dest_path) or self.context.clean_env:
@@ -59,9 +96,8 @@ class EnvUpsertManager:
             os.makedirs(dest_dir, mode=0o700, exist_ok=True)
             self.transaction_manager.record_created_dir(dest_dir)
 
-        # Случай 1: Файл не существует или запрошена чистая установка (--clean-env)
         if not os.path.exists(dest_path) or self.context.clean_env:
-            with open(src_path, "r", encoding="utf-8") as f:
+            with open(effective_src, "r", encoding="utf-8") as f:
                 content = f.read()
 
             content = self._resolve_prompts(content)
@@ -79,7 +115,6 @@ class EnvUpsertManager:
             self.context.log(f"🔐 Сконфигурирован ENV файл: {dest_path}")
             return True
 
-        # Случай 2: Неразрушающий upsert в существующий файл
         existing_keys, _ = self.parser.parse_file(dest_path)
         new_lines_to_append = []
 
@@ -107,10 +142,7 @@ class EnvUpsertManager:
         return True
 
     def remove_env(self, pkg_name: str, purge: bool = False) -> None:
-        """
-        Удаляет каталог ENV пакета только при purge=True.
-        По умолчанию сохраняет каталог секретов.
-        """
+        """Удаляет системный каталог ENV пакета только при purge=True."""
         env_dir = self.get_env_dir(pkg_name)
         if not os.path.exists(env_dir):
             return
@@ -123,19 +155,20 @@ class EnvUpsertManager:
 
     def _resolve_prompts(self, text: str) -> str:
         """
-        Разрешает макросы подсказок вида {{PROMPT:notice}} и {{PROMPT:key:default}}.
-        В интерактивном терминале запрашивает значение у пользователя.
-        В неинтерактивном режиме подставляет значение по умолчанию или пустую строку.
+        Разрешает оставшиеся макросы {{PROMPT:...}}.
+        Если все промпты уже заполнены через предустановку в ./env/, вопросы не задаются.
         """
         pattern = re.compile(r"\{\{PROMPT:(.*?)\}\}")
-        is_interactive = sys.stdin.isatty() and not os.environ.get("DE_NONINTERACTIVE")
+        if not pattern.search(text):
+            return text
+
+        is_interactive = sys.stdin.isatty() and not os.environ.get("DE_NONINTERACTIVE") and not self.context.non_interactive
 
         def replace_match(match: re.Match) -> str:
             inner = match.group(1).strip()
             default_val = ""
             notice = inner
 
-            # Формат {{PROMPT:notice_or_key:default}} (если правая часть после ':' не закрывает скобку)
             if ":" in inner and not inner.endswith(")"):
                 left, right = inner.rsplit(":", 1)
                 if "(" not in right and ")" not in right:
@@ -144,7 +177,11 @@ class EnvUpsertManager:
 
             if is_interactive:
                 print(f"\n💬 [ПОДКАЗКА]: {notice}")
-                prompt_msg = f"👉 Введите значение [{default_val}]: " if default_val else "👉 Введите значение (Enter для значения по умолчанию): "
+                prompt_msg = (
+                    f"👉 Введите значение [{default_val}]: "
+                    if default_val
+                    else "👉 Введите значение (Enter для значения по умолчанию): "
+                )
                 try:
                     sys.stdout.write(prompt_msg)
                     sys.stdout.flush()

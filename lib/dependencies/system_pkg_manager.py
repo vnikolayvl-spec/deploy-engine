@@ -1,61 +1,43 @@
 """
-System package manager for aggregating and installing OS dependencies.
+System package manager delegating OS-specific package installation to the active EnvironmentProvider.
 """
-import shutil
-import subprocess
-from typing import List, Optional
-from lib.core.deploy_engine_error import DeployEngineError
+from typing import Any, List, Optional
 from lib.core.execution_context import ExecutionContext
+from lib.providers.base_provider import BaseEnvironmentProvider
+from lib.providers.provider_factory import EnvironmentProviderFactory
 
 
 class SystemPackageManager:
-    """Агрегация и установка системных пакетов ОС за один вызов пакетного менеджера."""
+    """Агрегация, разрешение под целевую ОС и установка системных пакетов через провайдер окружения."""
 
-    def __init__(self, context: Optional[ExecutionContext] = None):
+    def __init__(
+        self,
+        context: Optional[ExecutionContext] = None,
+        provider: Optional[BaseEnvironmentProvider] = None,
+    ):
         self.context = context or ExecutionContext()
+        self.provider = provider or EnvironmentProviderFactory.create(self.context)
 
     def detect_manager(self) -> str:
-        """Определяет доступный системный пакетный менеджер."""
-        for pm in ["apt-get", "dnf", "yum", "apk", "pacman"]:
-            if shutil.which(pm):
-                return pm
-        return "apt-get"
+        """Возвращает активный системный пакетный менеджер текущего провайдера."""
+        return self.provider.detect_package_manager() or (
+            "brew" if self.provider.os_family == "macos" else "apt-get"
+        )
 
-    def install_packages(self, packages: List[str]) -> bool:
+    def resolve_for_platform(self, raw_sys_packages: Any) -> List[str]:
+        """Разрешает список или словарь sys_packages под текущую ОС и пакетный менеджер."""
+        return self.provider.resolve_sys_packages(raw_sys_packages)
+
+    def install_packages(self, packages: Any) -> bool:
         """
-        Агрегирует и устанавливает список системных пакетов.
-        Если context.dry_run=True, только имитирует установку.
+        Разрешает и устанавливает список системных пакетов через активный провайдер окружения.
+        Поддерживает как плоский список, так и словарь sys_packages.
         """
-        if not packages:
+        resolved_pkgs = (
+            self.resolve_for_platform(packages)
+            if isinstance(packages, dict)
+            else list(dict.fromkeys([str(p).strip() for p in (packages or []) if str(p).strip()]))
+        )
+        if not resolved_pkgs:
             return True
-
-        # Убираем дубликаты с сохранением порядка
-        unique_pkgs = list(dict.fromkeys(packages))
-        pm = self.detect_manager()
-
-        if self.context.dry_run:
-            self.context.log(f"🔎 [DRY-RUN] Системные пакеты для установки ({pm}): {', '.join(unique_pkgs)}")
-            return True
-
-        self.context.log(f"📦 Установка {len(unique_pkgs)} системных пакетов через {pm}...")
-        self.context.log(f"   Пакеты: {', '.join(unique_pkgs)}")
-
-        cmd: List[str] = []
-        if pm == "apt-get":
-            cmd = ["apt-get", "install", "-y", "--no-install-recommends"] + unique_pkgs
-        elif pm in ["dnf", "yum"]:
-            cmd = [pm, "install", "-y"] + unique_pkgs
-        elif pm == "apk":
-            cmd = ["apk", "add", "--no-cache"] + unique_pkgs
-        elif pm == "pacman":
-            cmd = ["pacman", "-S", "--noconfirm"] + unique_pkgs
-        else:
-            cmd = [pm, "install", "-y"] + unique_pkgs
-
-        try:
-            res = subprocess.run(cmd, check=True)
-            return res.returncode == 0
-        except subprocess.CalledProcessError as err:
-            raise DeployEngineError(f"Ошибка при установке системных пакетов {unique_pkgs}: {err}")
-        except FileNotFoundError:
-            raise DeployEngineError(f"Пакетный менеджер {pm} не найден в системе.")
+        return self.provider.install_sys_packages(resolved_pkgs)

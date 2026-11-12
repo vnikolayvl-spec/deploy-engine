@@ -123,49 +123,50 @@ class TestDeployEngine2Features(unittest.TestCase):
 
     def test_category_and_package_manifests_separation(self):
         """
-        Проверка разделения манифестов подкатегорий (category.json / manifest.json с type=category)
-        и манифестов пакетов, а также флага active (активна / не активна).
+        Проверка строгого разделения category.json (для категорий) и manifest.json (для пакетов),
+        а также автоматического построения вложенных категорий без category.json по иерархии папок.
         """
         active_cat = os.path.join(self.test_dir, "services")
         inactive_cat = os.path.join(self.test_dir, "experimental")
         empty_cat = os.path.join(self.test_dir, "services", "empty-group")
         pkg_dir = os.path.join(self.test_dir, "services", "server")
         inactive_pkg_dir = os.path.join(self.test_dir, "experimental", "beta-node")
-        no_manifest_branch = os.path.join(self.test_dir, "untracked", "deep")
+        nested_no_cat_pkg_dir = os.path.join(self.test_dir, "network", "vpn", "wireguard")
 
         os.makedirs(empty_cat, exist_ok=True)
         os.makedirs(pkg_dir, exist_ok=True)
         os.makedirs(inactive_pkg_dir, exist_ok=True)
-        os.makedirs(no_manifest_branch, exist_ok=True)
+        os.makedirs(nested_no_cat_pkg_dir, exist_ok=True)
 
-        # Манифест активной подкатегории с описанием и порядком
+        # Манифест активной категории с кастомным заголовком title, описанием и порядком
         with open(os.path.join(active_cat, "category.json"), "w") as f:
-            json.dump({"type": "category", "desc": "Основные сервисы", "active": True, "order": 10}, f)
+            json.dump({"title": "Core Services", "desc": "Основные сервисы", "active": True, "order": 10}, f)
 
-        # Манифест неактивной подкатегории (active: false)
-        with open(os.path.join(inactive_cat, "manifest.json"), "w") as f:
-            json.dump({"type": "category", "desc": "Экспериментальные модули", "active": False}, f)
+        # Манифест неактивной категории (active: false) строго через category.json
+        with open(os.path.join(inactive_cat, "category.json"), "w") as f:
+            json.dump({"desc": "Экспериментальные модули", "active": False}, f)
 
-        # Пустой манифест подкатегории
-        with open(os.path.join(empty_cat, "manifest.json"), "w") as f:
+        # Пустой category.json подкатегории
+        with open(os.path.join(empty_cat, "category.json"), "w") as f:
             f.write("{}")
 
-        # Манифест пакета в активной подкатегории
+        # Манифест пакета в активной категории
         with open(os.path.join(pkg_dir, "manifest.json"), "w") as f:
             json.dump({"name": "server", "desc": "Сервис обработки", "units": {"app.sh": {"type": "script"}}}, f)
 
-        # Манифест пакета в неактивной подкатегории
+        # Манифест пакета в неактивной категории
         with open(os.path.join(inactive_pkg_dir, "manifest.json"), "w") as f:
             json.dump({"name": "beta-node", "desc": "Бета узел"}, f)
 
-        # Папка без манифеста (игнорируется)
-        with open(os.path.join(no_manifest_branch, "manifest.json"), "w") as f:
-            json.dump({"name": "hidden"}, f)
+        # Пакет во вложенных папках network/vpn/ без category.json (должны создаться автоматически по имени папки)
+        with open(os.path.join(nested_no_cat_pkg_dir, "manifest.json"), "w") as f:
+            json.dump({"name": "wireguard", "desc": "VPN туннель"}, f)
 
         registry = PackageRegistry(cache_file=os.path.join(self.test_dir, "cache.json"))
         registry.scan_directories([self.test_dir], force_rescan=True)
 
         self.assertIn("services", registry.folders)
+        self.assertEqual(registry.folders["services"]["title"], "Core Services")
         self.assertEqual(registry.folders["services"]["desc"], "Основные сервисы")
         self.assertTrue(registry.folders["services"]["active"])
         self.assertTrue(registry.is_folder_active("services"))
@@ -173,10 +174,14 @@ class TestDeployEngine2Features(unittest.TestCase):
         self.assertIn("experimental", registry.folders)
         self.assertFalse(registry.folders["experimental"]["active"])
         self.assertFalse(registry.is_folder_active("experimental"))
+        self.assertFalse(registry.get("beta-node")["active"])
 
         self.assertIn("services/empty-group", registry.folders)
-        self.assertTrue(registry.has("server"))
-        self.assertFalse(registry.has("hidden"))
+        self.assertIn("network", registry.folders)
+        self.assertIn("network/vpn", registry.folders)
+        self.assertEqual(registry.folders["network/vpn"]["name"], "vpn")
+        self.assertTrue(registry.has("wireguard"))
+        self.assertEqual(registry.get("wireguard")["folder_path"], "network/vpn")
         self.assertEqual(registry.get("server")["folder_path"], "services")
 
     def test_category_manifest_parser_direct(self):

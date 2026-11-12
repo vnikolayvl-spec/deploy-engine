@@ -19,10 +19,12 @@ class FileInstaller:
         self,
         context: Optional[ExecutionContext] = None,
         transaction_manager: Optional[TransactionManager] = None,
+        provider=None,
     ):
         self.context = context or ExecutionContext()
         self.transaction_manager = transaction_manager or TransactionManager()
-        self.data_installer = DataUnitInstaller(self.context, self.transaction_manager)
+        self.provider = provider
+        self.data_installer = DataUnitInstaller(self.context, self.transaction_manager, provider=provider)
 
     @staticmethod
     def _ignore_special_files(dir_path: str, names: List[str]) -> List[str]:
@@ -183,3 +185,68 @@ class FileInstaller:
         except Exception as err:
             self.context.log(f"⚠️ Не удалось удалить {dest_path}: {err}")
             return False
+
+    def install_plist_content(self, plist_xml: str, dest_path: str, mode: int = 0o644) -> bool:
+        """Записывает сконвертированный XML .plist с резервным копированием и поддержкой транзакций."""
+        if self.context.dry_run:
+            self.context.log(f"🔎 [DRY-RUN] Генерация launchd plist: {dest_path} (mode {oct(mode)})")
+            return True
+
+        dest_dir = os.path.dirname(dest_path)
+        if dest_dir and not os.path.exists(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+            self.transaction_manager.record_created_dir(dest_dir)
+
+        if os.path.exists(dest_path) or os.path.islink(dest_path):
+            backup_path = f"{dest_path}.de_bak"
+            self._clean_backup_path(backup_path)
+            shutil.copy2(dest_path, backup_path)
+            self.transaction_manager.record_backup(dest_path, backup_path)
+        else:
+            self.transaction_manager.record_created_file(dest_path)
+
+        with open(dest_path, "w", encoding="utf-8") as f:
+            f.write(plist_xml)
+        os.chmod(dest_path, mode)
+        self.context.log(f"🍏 Сгенерирован launchd plist: {dest_path}")
+        return True
+
+    def install_launchd_plists(
+        self,
+        pkg_name: str,
+        service_units: Dict[str, tuple],
+        timer_units: Dict[str, tuple],
+        static_env_vars: Dict[str, str],
+        context_vars: Dict[str, str],
+    ) -> List[str]:
+        """Компилирует .service, .timer и статические переменные .env в .plist для launchd."""
+        from lib.providers.systemd_to_plist_converter import SystemdToPlistConverter
+
+        installed_plists: List[str] = []
+        all_stems = list(dict.fromkeys(list(service_units.keys()) + list(timer_units.keys())))
+        for stem in all_stems:
+            srv_entry = service_units.get(stem)
+            tmr_entry = timer_units.get(stem)
+            unit_name, _, dest_path, mode = srv_entry or tmr_entry
+
+            srv_text = ""
+            if srv_entry and os.path.isfile(srv_entry[1]):
+                with open(srv_entry[1], "r", encoding="utf-8") as f:
+                    srv_text = f.read()
+
+            tmr_text = None
+            if tmr_entry and os.path.isfile(tmr_entry[1]):
+                with open(tmr_entry[1], "r", encoding="utf-8") as f:
+                    tmr_text = f.read()
+
+            plist_xml = SystemdToPlistConverter.convert_to_xml(
+                pkg_name=pkg_name,
+                unit_name=unit_name,
+                service_text=srv_text,
+                timer_text=tmr_text,
+                env_vars=static_env_vars,
+                context_vars=context_vars,
+            )
+            self.install_plist_content(plist_xml, dest_path, mode)
+            installed_plists.append(dest_path)
+        return installed_plists

@@ -110,6 +110,22 @@ class ManifestParser:
         raw_active = data.get("active") if "active" in data else data.get("enabled")
         active = CategoryManifestParser.parse_bool(raw_active, default=True)
 
+        raw_platforms = data.get("platforms") if "platforms" in data else data.get("os")
+        if isinstance(raw_platforms, str):
+            platforms = [p.strip().lower() for p in raw_platforms.split(",") if p.strip()]
+        elif isinstance(raw_platforms, list):
+            platforms = [str(p).strip().lower() for p in raw_platforms if str(p).strip()]
+        else:
+            platforms = []
+
+        raw_sys_pkgs = data.get("sys_packages", [])
+        if isinstance(raw_sys_pkgs, dict):
+            sys_packages: Any = {str(k).lower(): list(v) for k, v in raw_sys_pkgs.items() if isinstance(v, list)}
+        elif isinstance(raw_sys_pkgs, list):
+            sys_packages = list(raw_sys_pkgs)
+        else:
+            sys_packages = []
+
         normalized: Dict[str, Any] = {
             "type": "package",
             "is_category": False,
@@ -117,12 +133,13 @@ class ManifestParser:
             "is_multi_package": False,
             "is_alias": bool(data.get("is_alias", False)),
             "active": active,
+            "platforms": platforms,
             "name": name,
             "version": str(data.get("version", "1.0.0")),
             "description": desc,
             "desc": desc,
             "requires": list(data.get("requires", [])),
-            "sys_packages": list(data.get("sys_packages", [])),
+            "sys_packages": sys_packages,
             "python_packages": list(data.get("python_packages", [])),
             "node_packages": list(data.get("node_packages", [])),
             "units": dict(data.get("units", {})),

@@ -1,5 +1,5 @@
 """
-Resolver for unit file paths and filesystem permissions.
+Resolver for unit file paths and filesystem permissions with cross-platform provider support.
 """
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -12,13 +12,32 @@ from deploy_config import (
     SYS_SYSTEMD,
 )
 from lib.core.deploy_engine_error import DeployEngineError
+from lib.providers.base_provider import BaseEnvironmentProvider
+from lib.providers.systemd_to_plist_converter import SystemdToPlistConverter
 
 
 class UnitPathResolver:
-    """Определение исходных и системных путей, прав доступа и типов юнитов."""
+    """Определение исходных и системных путей, прав доступа и типов юнитов с учетом провайдера ОС."""
 
-    def __init__(self, base_packages_dir: str = "."):
+    def __init__(
+        self,
+        base_packages_dir: str = ".",
+        provider: Optional[BaseEnvironmentProvider] = None,
+    ):
         self.base_packages_dir = base_packages_dir
+        self.provider = provider
+
+    def get_active_paths(self) -> Dict[str, str]:
+        """Возвращает системные пути из активного провайдера или дефолтные константы."""
+        if self.provider:
+            return self.provider.get_paths()
+        return {
+            "sys_bin": SYS_BIN,
+            "sys_systemd": SYS_SYSTEMD,
+            "env_path": ENV_PATH,
+            "state_dir": STATE_DIR,
+            "opt_dir": "/opt",
+        }
 
     def resolve(
         self,
@@ -29,14 +48,13 @@ class UnitPathResolver:
     ) -> Tuple[str, str, int, str]:
         """
         Возвращает кортеж: (src_path, dest_path, mode, unit_type).
-        Поддерживает конвенции папок (files/, scripts/, systemd/),
-        пользовательские пути dest/target и макросы {{SYS_BIN}}, {{SYS_SYSTEMD}}, {{BASE_DIR}}, {{ROOT_DIR}}.
+        На macOS (или в песочнице macOS) для юнитов unit/service/timer целевой путь автоматически
+        указывает на launchd .plist.
         """
         unit_spec = unit_spec or {}
         clean_name = unit_name.split(":")[-1]
         unit_type = unit_spec.get("type")
 
-        # Определение типа юнита по расширению или имени, если не задан явно
         if not unit_type:
             if unit_spec.get("is_link") or unit_spec.get("symlink"):
                 unit_type = "symlink"
@@ -51,13 +69,20 @@ class UnitPathResolver:
             else:
                 unit_type = "file"
 
+        paths = self.get_active_paths()
+        sys_bin = paths["sys_bin"]
+        sys_systemd = paths["sys_systemd"]
+        env_path = paths["env_path"]
+        state_dir = paths["state_dir"]
+        opt_dir = paths.get("opt_dir", "/opt")
+
         base_dir_abs = os.path.abspath(pkg_base_dir or ".")
         root_dir_abs = os.path.abspath(unit_spec.get("root_dir") or os.path.dirname(base_dir_abs))
         context_vars = {
             "{{ROOT_DIR}}": root_dir_abs,
             "{{BASE_DIR}}": base_dir_abs,
-            "{{SYS_BIN}}": SYS_BIN,
-            "{{SYS_SYSTEMD}}": SYS_SYSTEMD,
+            "{{SYS_BIN}}": sys_bin,
+            "{{SYS_SYSTEMD}}": sys_systemd,
         }
 
         # 1. Вычисление исходного пути (src_path)
@@ -87,7 +112,7 @@ class UnitPathResolver:
             else:
                 src_path = file_src_rel
 
-        # 2. Вычисление целевого пути (dest_path) и прав доступа (mode) по умолчанию
+        # 2. Вычисление целевого пути (dest_path) и прав доступа (mode)
         custom_dest = unit_spec.get("dest") or unit_spec.get("target")
         raw_mode = unit_spec.get("mode")
         if isinstance(raw_mode, str):
@@ -97,16 +122,24 @@ class UnitPathResolver:
         else:
             custom_mode = None
 
+        use_plist = bool(self.provider and self.provider.uses_launchd_plist())
+
         if unit_type == "script":
-            default_dest = os.path.join(SYS_BIN, os.path.basename(clean_name))
+            default_dest = os.path.join(sys_bin, os.path.basename(clean_name))
             default_mode = 0o755
 
         elif unit_type in ["unit", "service", "timer"]:
-            default_dest = os.path.join(SYS_SYSTEMD, os.path.basename(clean_name))
+            if use_plist:
+                plist_fname = SystemdToPlistConverter.get_plist_filename(pkg_name, clean_name)
+                default_dest = os.path.join(sys_systemd, plist_fname)
+                if custom_dest and ("/systemd/" in str(custom_dest) or "{{SYS_SYSTEMD}}" in str(custom_dest)):
+                    custom_dest = None
+            else:
+                default_dest = os.path.join(sys_systemd, os.path.basename(clean_name))
             default_mode = 0o644
 
         elif unit_type == "env":
-            dest_dir = os.path.join(ENV_PATH, f"{ENV_PREFIX}{pkg_name}")
+            dest_dir = os.path.join(env_path, f"{ENV_PREFIX}{pkg_name}")
             base_fname = os.path.basename(clean_name)
             if base_fname == "deploy.env":
                 dest_name = f"{pkg_name}.env"
@@ -118,16 +151,16 @@ class UnitPathResolver:
             default_mode = 0o600
 
         elif unit_type == "data":
-            dest_dir = os.path.join(STATE_DIR, f"{DATA_PREFIX}{pkg_name}")
+            dest_dir = os.path.join(state_dir, f"{DATA_PREFIX}{pkg_name}")
             default_dest = os.path.join(dest_dir, os.path.basename(clean_name))
             default_mode = 0o600
 
         elif unit_type == "symlink":
-            default_dest = os.path.join(SYS_BIN, os.path.basename(clean_name))
+            default_dest = os.path.join(sys_bin, os.path.basename(clean_name))
             default_mode = 0o777
 
         elif unit_type == "file":
-            base_files_dir = os.path.join("/opt", f"de_{pkg_name}", "files")
+            base_files_dir = os.path.join(opt_dir, f"de_{pkg_name}", "files")
             if clean_name == "files":
                 default_dest = base_files_dir
             else:
@@ -140,6 +173,12 @@ class UnitPathResolver:
         dest_path = str(custom_dest or default_dest)
         for marker, real_val in context_vars.items():
             dest_path = dest_path.replace(marker, real_val)
+
+        # Если активна песочница и в манифесте был задан абсолютный системный путь вне песочницы, перенаправляем его внутрь песочницы
+        if self.provider and self.provider.is_sandbox and self.provider.sandbox_dir and custom_dest:
+            sb_root = self.provider.sandbox_dir
+            if os.path.isabs(dest_path) and not dest_path.startswith(sb_root):
+                dest_path = os.path.join(sb_root, dest_path.lstrip("/"))
 
         mode = custom_mode if custom_mode is not None else default_mode
         return src_path, dest_path, mode, unit_type

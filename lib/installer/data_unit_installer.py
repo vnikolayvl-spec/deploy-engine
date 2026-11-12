@@ -16,13 +16,16 @@ class DataUnitInstaller:
         self,
         context: Optional[ExecutionContext] = None,
         transaction_manager: Optional[TransactionManager] = None,
+        provider=None,
     ):
         self.context = context or ExecutionContext()
         self.transaction_manager = transaction_manager or TransactionManager()
+        self.provider = provider
 
     def get_data_dir(self, pkg_name: str) -> str:
-        """Возвращает путь к каталогу данных пакета: /var/lib/de_{pkg}."""
-        return os.path.join(STATE_DIR, f"{DATA_PREFIX}{pkg_name}")
+        """Возвращает путь к каталогу данных пакета с учетом провайдера окружения."""
+        state_dir = self.provider.get_paths()["state_dir"] if self.provider else STATE_DIR
+        return os.path.join(state_dir, f"{DATA_PREFIX}{pkg_name}")
 
     def install_data_unit(self, src_path: str, dest_path: str, mode: int = 0o600) -> bool:
         """

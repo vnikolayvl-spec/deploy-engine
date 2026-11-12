@@ -15,10 +15,17 @@ ENV_PREFIX = "de_"              # Префикс безопасности для
 STATE_DIR = "/var/lib"          # Базовый каталог для динамических данных (базы данных, хранилища)
 DATA_PREFIX = "de_"             # Префикс для каталогов постоянных данных (/var/lib/de_{pkg})
 
+# Корневая директория запуска deploy-engine
+ENGINE_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Каталог пакетов по умолчанию
 DEFAULT_PACKAGES_DIR = "./packages"
 PACKAGES_DIR = os.getenv("DE_PACKAGES_DIR", DEFAULT_PACKAGES_DIR)
 
 # Файл кэша пакетов
 PACKAGES_CACHE_FILE = os.getenv("DE_PACKAGES_CACHE", "packages.json")
+
+# Локальная папка в директории запуска (deploy-engine/env) для хранения предустановок .env
+LOCAL_ENV_DIR = os.getenv("DE_LOCAL_ENV_DIR", os.path.join(ENGINE_ROOT_DIR, "env"))
+
 

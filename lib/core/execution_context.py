@@ -16,6 +16,9 @@ class ExecutionContext:
         non_interactive: bool = False,
         rescan: bool = False,
         json_output: bool = False,
+        sandbox: bool = False,
+        sandbox_os: Optional[str] = None,
+        sandbox_dir: Optional[str] = None,
     ):
         self.dry_run = dry_run
         self.purge = purge
@@ -25,6 +28,9 @@ class ExecutionContext:
         self.non_interactive = non_interactive
         self.rescan = rescan
         self.json_output = json_output
+        self.sandbox = sandbox
+        self.sandbox_os = sandbox_os
+        self.sandbox_dir = sandbox_dir
 
     def log(self, message: str) -> None:
         """Печать информационных сообщений с учетом json_output."""
