@@ -319,4 +319,3 @@ Deploy Engine автоматически ищет исходные файлы ю
    ./deploy.py install <имя_пакета> --sandbox linux
    ./deploy.py install <имя_пакета> --sandbox macos
    ```
-

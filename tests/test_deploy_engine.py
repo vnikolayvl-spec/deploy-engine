@@ -1,8 +1,11 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "files"))
 
 from lib.core.dependency_cycle_error import DependencyCycleError
 from lib.core.execution_context import ExecutionContext

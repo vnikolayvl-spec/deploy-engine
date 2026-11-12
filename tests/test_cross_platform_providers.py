@@ -6,8 +6,11 @@ import json
 import os
 import plistlib
 import shutil
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "files"))
 
 from lib.core.deploy_engine_error import DeployEngineError
 from lib.core.engine import Engine

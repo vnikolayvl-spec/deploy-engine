@@ -198,4 +198,3 @@
 4. [ ] Если есть `.env`, использует ли он `"type": "env"` и синтаксис `{{PROMPT:Описание:дефолт}}` для настраиваемых параметров?
 5. [ ] Отсутствуют ли в `manifest.json` ключи, предназначенные для `category.json` (`order`, `title`)?
 6. [ ] Добавлены ли в `post_install` и `pre_uninstall` команды управления сервисом/таймером (`systemctl daemon-reload`, `systemctl enable --now ...`)?
-

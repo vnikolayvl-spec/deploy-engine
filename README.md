@@ -104,13 +104,48 @@ sudo ./deploy.py uninstall app-service
 sudo ./deploy.py uninstall app-service --purge
 ```
 
-### 7. Удаленное управление по SSH
-```bash
-# Установка пакета на удаленный сервер
-./deploy.py install app-service --remote admin@remote-server.internal
+### 7. Двухуровневое удаленное управление по SSH (`--remote` и `--remote-dir`)
+При работе с флагом `--remote [user@]host[:port]` движок автоматически проверяет наличие установленного **Deploy Engine** на целевом сервере в `/opt/de_deploy-engine` (или по кастомному пути `--remote-dir <путь>`):
+- **Полный режим** (если `deploy-engine` установлен на сервере): доступны все команды (`install`, `uninstall`, `reinstall`, полная таблица `list`, карточка `info`, `backup`, `restore`) и клиент-серверный **Remote TUI**.
+- **Сокращенный режим** (если `deploy-engine` на сервере не установлен): доступны базовые команды `install`, `uninstall`, `reinstall` (через временный бандл) и `list`.
 
-# Удаленная проверка установленных пакетов
+```bash
+# Установка, инспекция и бэкапы на удаленном сервере
+./deploy.py install app-service --remote admin@remote-server.internal
 ./deploy.py list --remote admin@remote-server.internal
+./deploy.py info app-service --remote admin@remote-server.internal
+./deploy.py backup app-service -c "До обновления" --remote admin@remote-server.internal
+./deploy.py restore app-service 1 --remote admin@remote-server.internal
+
+# Указание кастомного пути к движку на удаленном сервере
+./deploy.py list --remote admin@remote-server.internal --remote-dir /srv/de_deploy-engine
+
+# Запуск локального TUI в режиме управления удаленным сервером (Полный режим)
+./deploy_ui.py ./packages --remote admin@remote-server.internal
+```
+
+### 8. Резервное копирование и восстановление данных (`backup` и `restore`)
+Команды `backup` и `restore` сохраняют и восстанавливают все динамические данные пакета (`/var/lib/de_<pkg>` + любые кастомные юниты `data`) и файлы окружения (`/etc/default/de_<pkg>` + юниты `env`) в сжатые архивы `deploy-engine/backup/<pkg>/<timestamp>.tar.gz`:
+```bash
+# Создать бэкап одного пакета с комментарием
+./deploy.py backup app-service --comment "Перед обновлением схемы БД"
+
+# Создать бэкап всех установленных пакетов
+./deploy.py backup all -c "Плановый бэкап"
+
+# Посмотреть список всех доступных бэкапов (с номерами, размерами, путями и комментариями)
+./deploy.py backup --list
+./deploy.py restore app-service --list
+
+# Восстановить самый свежий бэкап [1] по умолчанию
+sudo ./deploy.py restore app-service
+
+# Восстановить конкретный бэкап по его номеру в списке или метке времени
+sudo ./deploy.py restore app-service 2
+sudo ./deploy.py restore app-service 20261112_153010
+
+# Восстановить последние свежие бэкапы для всех пакетов
+sudo ./deploy.py restore all
 ```
 
 ---

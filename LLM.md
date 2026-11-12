@@ -51,23 +51,30 @@ This file serves as a system prompt, technical architecture map, and development
 
 ```text
 deploy-engine/
-├── deploy.py                  # CLI Entrypoint (install, uninstall, reinstall, list, scan)
-├── deploy_config.py           # Global constants (FHS paths, default packages directory, cache file)
-├── deploy_ui.py               # TUI Bootstrapper (.venv auto-creation wrapper for Textual)
-├── VERSION.txt                # Version number (e.g., 2.0.0)
+├── manifest.json              # Package manifest for self-deployment into /opt/de_deploy-engine
+├── deploy.env                 # System configuration template (/etc/default/de_deploy-engine/deploy-engine.env)
+├── VERSION.txt                # Version number
 ├── COMMIT.txt                 # Commit descriptor (ignored in git)
 ├── CHANGELOG.txt              # Changelog history (ignored in git)
-├── .gitignore                 # Merged git ignore rules
+├── .gitignore                 # Git ignore rules
 ├── LICENSE                    # Open-source license
 ├── README.md                  # Comprehensive user documentation
 ├── LLM.md                     # AI Context, rules, and architecture specification (this file)
+├── scripts/
+│   ├── deploy-engine.sh       # System CLI launcher -> {{SYS_BIN}}/deploy-engine
+│   └── deploy-ui.sh           # System TUI launcher -> {{SYS_BIN}}/deploy-ui
 ├── tests/
-│   └── test_deploy_engine.py  # Unit test suite covering all core features
-└── lib/
-    ├── __init__.py
-    ├── engine.py              # Backward-compatible facade export (from lib.core.engine import Engine)
-    ├── ui_app.py              # Textual TUI screen controller & action listeners
-    ├── utils.py               # Root checking and GUI bootstrap helpers
+│   └── test_*.py              # Unit test suite covering all core features
+└── files/
+    ├── deploy.py              # CLI Entrypoint (install, uninstall, reinstall, backup, restore, list, info, scan)
+    ├── deploy_ui.py           # TUI Bootstrapper (.venv auto-creation wrapper for Textual)
+    ├── app.env.example        # Template for local standalone configuration (app.env)
+    └── lib/
+        ├── __init__.py
+        ├── config.py          # Hierarchical config loader & dual-mode path resolver
+        ├── engine.py          # Backward-compatible facade export (from lib.core.engine import Engine)
+        ├── ui_app.py          # Textual TUI screen controller & action listeners
+        ├── utils.py           # Root checking and GUI bootstrap helpers
     ├── core/                  # Core abstractions and facade
     │   ├── deploy_engine_error.py       # Base exception DeployEngineError
     │   ├── manifest_validation_error.py # Schema & manifest syntax errors

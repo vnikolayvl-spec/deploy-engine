@@ -1,0 +1,89 @@
+{
+  "packages": {
+    "deploy-engine": {
+      "version": "7.0.0",
+      "desc": "Модульный кроссплатформенный оркестратор развертывания пакетов, резервного копирования и TUI-управления",
+      "sys_packages": {
+        "linux": [
+          "curl",
+          "tar"
+        ],
+        "apt": [
+          "python3",
+          "python3-venv",
+          "python3-pip",
+          "openssh-client"
+        ],
+        "dnf": [
+          "python3",
+          "python3-pip",
+          "openssh-clients"
+        ],
+        "apk": [
+          "python3",
+          "py3-pip",
+          "openssh-client"
+        ],
+        "pacman": [
+          "python",
+          "python-pip",
+          "openssh"
+        ],
+        "brew": [
+          "python3"
+        ]
+      },
+      "include": [
+        "deploy.env",
+        "files",
+        "deploy-engine.sh",
+        "deploy-engine",
+        "deploy-ui.sh",
+        "deploy-ui"
+      ],
+      "post_install": [
+        "mkdir -p {{DATA_DIR}}/packages {{DATA_DIR}}/backup {{DATA_DIR}}/env",
+        "chmod -R a+rX /opt/de_deploy-engine 2>/dev/null || true",
+        "chmod -R a+rX {{ENV_DIR}} 2>/dev/null || true",
+        "xattr -rc /opt/de_deploy-engine 2>/dev/null || true",
+        "chmod +x {{SYS_BIN}}/deploy-engine.sh {{SYS_BIN}}/deploy-ui.sh",
+        "chmod +x {{SYS_BIN}}/deploy-engine {{SYS_BIN}}/deploy-ui 2>/dev/null || true",
+        "chmod +x /opt/de_deploy-engine/files/deploy.py /opt/de_deploy-engine/files/deploy_ui.py 2>/dev/null || true"
+      ]
+    }
+  },
+  "units": {
+    "deploy.env": {
+      "type": "env",
+      "desc": "Системная конфигурация оркестратора Deploy Engine",
+      "dest": "/etc/default/de_deploy-engine/deploy-engine.env"
+    },
+    "files": {
+      "type": "file",
+      "desc": "Модульное Python-ядро и библиотеки оркестратора Deploy Engine",
+      "dest": "/opt/de_deploy-engine/files"
+    },
+    "deploy-engine.sh": {
+      "type": "script",
+      "desc": "Системный CLI лаунчер оркестратора Deploy Engine",
+      "dest": "{{SYS_BIN}}/deploy-engine.sh"
+    },
+    "deploy-engine": {
+      "type": "symlink",
+      "desc": "Символическая ссылка для вызова CLI deploy-engine без расширения .sh",
+      "src": "{{SYS_BIN}}/deploy-engine.sh",
+      "dest": "{{SYS_BIN}}/deploy-engine"
+    },
+    "deploy-ui.sh": {
+      "type": "script",
+      "desc": "Системный TUI лаунчер графической консоли Deploy Engine",
+      "dest": "{{SYS_BIN}}/deploy-ui.sh"
+    },
+    "deploy-ui": {
+      "type": "symlink",
+      "desc": "Символическая ссылка для запуска TUI deploy-ui без расширения .sh",
+      "src": "{{SYS_BIN}}/deploy-ui.sh",
+      "dest": "{{SYS_BIN}}/deploy-ui"
+    }
+  }
+}
