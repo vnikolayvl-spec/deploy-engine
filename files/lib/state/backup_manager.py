@@ -60,13 +60,20 @@ class BackupManager:
                 except Exception:
                     continue
 
-        for std_dir, cat in ((os.path.join(paths["state_dir"], f"{DATA_PREFIX}{canonical}"), "data"), (os.path.join(paths["env_path"], f"{ENV_PREFIX}{canonical}"), "env")):
+        std_data_dir, std_env_dir = os.path.join(paths["state_dir"], f"{DATA_PREFIX}{canonical}"), os.path.join(paths["env_path"], f"{ENV_PREFIX}{canonical}")
+        for std_dir, cat in ((std_data_dir, "data"), (std_env_dir, "env")):
             if os.path.isdir(std_dir):
-                for entry in sorted(os.listdir(std_dir)):
-                    candidates.append((os.path.join(std_dir, entry), cat, entry))
+                candidates.extend(
+                    (os.path.join(std_dir, e), cat, e)
+                    for e in sorted(os.listdir(std_dir))
+                    if not (e.startswith("install_") and e.endswith(".log"))
+                )
 
         if state_entry:
+            std_containers = {os.path.abspath(std_data_dir), os.path.abspath(std_env_dir)}
             for fpath in state_entry.get("files", []):
+                if os.path.abspath(fpath) in std_containers:
+                    continue
                 if paths["state_dir"] in fpath or "/var/lib/" in fpath:
                     candidates.append((fpath, "data", os.path.basename(fpath)))
                 elif paths["env_path"] in fpath or "/etc/default/" in fpath or fpath.endswith(".env"):
@@ -95,18 +102,13 @@ class BackupManager:
         """Преобразует список целей (с поддержкой мета-значения 'all') в список имен пакетов."""
         if not raw_targets or any(t.lower() == "all" for t in raw_targets):
             if for_restore:
-                if not os.path.isdir(self.backup_root_dir):
-                    return []
-                return sorted([
-                    d for d in os.listdir(self.backup_root_dir)
-                    if os.path.isdir(os.path.join(self.backup_root_dir, d)) and self.list_package_backups(d)
-                ])
+                if not os.path.isdir(self.backup_root_dir): return []
+                return sorted([d for d in os.listdir(self.backup_root_dir) if os.path.isdir(os.path.join(self.backup_root_dir, d)) and self.list_package_backups(d)])
             discovered: List[str] = list((self.state_repo.get_state().get("installed", {}) if self.state_repo else {}).keys())
-            if self.registry:
-                for pkg_info in self.registry.packages.values():
-                    pname = "" if pkg_info.get("is_alias") else pkg_info.get("name", "")
-                    if pname and pname not in discovered and self.collect_package_items(pname)[2]:
-                        discovered.append(pname)
+            for pkg_info in (self.registry.packages.values() if self.registry else ()):
+                pname = "" if pkg_info.get("is_alias") else pkg_info.get("name", "")
+                if pname and pname not in discovered and self.collect_package_items(pname)[2]:
+                    discovered.append(pname)
             return discovered
         return list(dict.fromkeys(raw_targets))
 
@@ -128,12 +130,8 @@ class BackupManager:
             suffix += 1
 
         meta = {
-            "package": canonical,
-            "version": version,
-            "comment": (comment or "").strip(),
-            "created_at": now,
-            "timestamp": archive_name[:-7],
-            "created_iso": dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "package": canonical, "version": version, "comment": (comment or "").strip(),
+            "created_at": now, "timestamp": archive_name[:-7], "created_iso": dt.strftime("%Y-%m-%d %H:%M:%S"),
             "distro_id": getattr(self.provider, "distro_id", "linux"),
             "items": [{k: v for k, v in it.items() if k != "phys_path"} for it in items],
         }
@@ -153,10 +151,17 @@ class BackupManager:
         os.chmod(archive_path, 0o600)
         size_bytes = os.path.getsize(archive_path)
         comm = f' | 💬 "{meta["comment"]}"' if meta["comment"] else ""
-        self.context.log(
-            f"💾 Бэкап пакета '{canonical}' (v{version}) сохранен: {archive_path} ({self._fmt_size(size_bytes)}, путей: {len(items)}){comm}"
-        )
+        self.context.log(f"💾 Бэкап пакета '{canonical}' (v{version}) сохранен: {archive_path} ({self._fmt_size(size_bytes)}, путей: {len(items)}){comm}")
         return {**meta, "archive_path": archive_path, "size_bytes": size_bytes}
+
+    def count_package_backups(self, pkg_name: str) -> int:
+        """Быстрый подсчет количества архивов .tar.gz пакета без распаковки метаданных."""
+        pkg_info = self.registry.get(pkg_name) if (self.registry and self.registry.has(pkg_name)) else None
+        canonical = pkg_info["name"] if pkg_info else pkg_name.split("/")[-1]
+        pkg_dir = os.path.join(self.backup_root_dir, canonical)
+        if not os.path.isdir(pkg_dir):
+            return 0
+        return sum(1 for f in os.listdir(pkg_dir) if f.endswith(".tar.gz") and os.path.isfile(os.path.join(pkg_dir, f)))
 
     def list_package_backups(self, pkg_name: str) -> List[Dict[str, Any]]:
         """Возвращает отсортированный список бэкапов пакета (индекс 1 — самый свежий)."""

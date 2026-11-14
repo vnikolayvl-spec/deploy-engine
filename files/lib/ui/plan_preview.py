@@ -26,7 +26,7 @@ class PlanPreviewLog(RichLog):
         if provider:
             pm = provider.detect_package_manager() or "none"
             if provider.is_sandbox:
-                self.write(f"[bold magenta]🛡️ Окружение: Sandbox (эмуляция {provider.distro_id} / {pm})[/bold magenta]")
+                self.write(f"[bold magenta]🔒 Окружение: Sandbox (эмуляция {provider.distro_id} / {pm})[/bold magenta]")
             else:
                 self.write(f"[bold cyan]🌐 Окружение: {provider.distro_id} ({pm})[/bold cyan]")
 
@@ -37,8 +37,17 @@ class PlanPreviewLog(RichLog):
                     continue
                 plans[v].add(k)
 
-        if not plans["install"] and not plans["reinstall"] and not plans["uninstall"]:
-            self.write("[yellow]Используйте ПРОБЕЛ на пакетах для планирования операций...[/yellow]")
+        backup_set = {
+            k for k in getattr(self.app_ref, "backup_plans", set())
+            if self.engine.registry.has(k) and self.engine.is_package_compatible(k) and (not filter_pkg or k == filter_pkg)
+        }
+        restore_map = {
+            k: v for k, v in getattr(self.app_ref, "restore_plans", {}).items()
+            if v and self.engine.registry.has(k) and self.engine.is_package_compatible(k) and (not filter_pkg or k == filter_pkg)
+        }
+
+        if not plans["install"] and not plans["reinstall"] and not plans["uninstall"] and not backup_set and not restore_map:
+            self.write("[yellow]Используйте ПРОБЕЛ на пакетах, пункте бэкапа или архиве восстановления для планирования...[/yellow]")
             return
 
         import lib.config as config
@@ -46,6 +55,16 @@ class PlanPreviewLog(RichLog):
             "sys_bin": config.SYS_BIN,
             "sys_systemd": config.SYS_SYSTEMD,
         }
+
+        if backup_set:
+            self.write("[bold cyan]💾 ПЛАН СОЗДАНИЯ БЭКАПОВ (ВЫПОЛНЯЕТСЯ ПЕРВЫМ):[/bold cyan]")
+            for pkg in sorted(backup_set):
+                self.write(f"  [✓] Пакет [bold]{pkg}[/bold]: сохранение текущих data и .env в архив бэкапа")
+
+        if restore_map:
+            self.write("[bold magenta]🔄 ПЛАН ВОССТАНОВЛЕНИЯ ИЗ БЭКАПА (ПОСЛЕ СОЗДАНИЯ БЭКАПОВ):[/bold magenta]")
+            for pkg, arch in sorted(restore_map.items()):
+                self.write(f"  [✓] Пакет [bold]{pkg}[/bold]: восстановление из архива [bold]{arch}[/bold]")
 
         if plans["uninstall"]:
             self.write("[bold red]🚨 ПЛАН УДАЛЕНИЯ ПАКЕТОВ (ЭТАП 1):[/bold red]")
@@ -121,3 +140,4 @@ class PlanPreviewLog(RichLog):
                         self.write(f"      🔐 [ENV]     {fname}{badge} ({desc}) -> {dest}")
                     else:
                         self.write(f"      🔹 [Файл]    {fname} ({desc}) -> {dest}")
+

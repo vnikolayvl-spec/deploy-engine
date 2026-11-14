@@ -1,7 +1,7 @@
 {
   "packages": {
     "deploy-engine": {
-      "version": "7.0.0",
+      "version": "8.0.0",
       "desc": "Модульный кроссплатформенный оркестратор развертывания пакетов, резервного копирования и TUI-управления",
       "sys_packages": {
         "linux": [
@@ -33,6 +33,14 @@
           "python3"
         ]
       },
+      "dirs": [
+        "{{DATA_DIR}}/packages",
+        "{{DATA_DIR}}/backup",
+        {
+          "path": "{{DATA_DIR}}/env",
+          "mode": "0700"
+        }
+      ],
       "include": [
         "deploy.env",
         "files",
@@ -40,15 +48,6 @@
         "deploy-engine",
         "deploy-ui.sh",
         "deploy-ui"
-      ],
-      "post_install": [
-        "mkdir -p {{DATA_DIR}}/packages {{DATA_DIR}}/backup {{DATA_DIR}}/env",
-        "chmod -R a+rX /opt/de_deploy-engine 2>/dev/null || true",
-        "chmod -R a+rX {{ENV_DIR}} 2>/dev/null || true",
-        "xattr -rc /opt/de_deploy-engine 2>/dev/null || true",
-        "chmod +x {{SYS_BIN}}/deploy-engine.sh {{SYS_BIN}}/deploy-ui.sh",
-        "chmod +x {{SYS_BIN}}/deploy-engine {{SYS_BIN}}/deploy-ui 2>/dev/null || true",
-        "chmod +x /opt/de_deploy-engine/files/deploy.py /opt/de_deploy-engine/files/deploy_ui.py 2>/dev/null || true"
       ]
     }
   },

@@ -268,8 +268,7 @@ class PackageRegistry:
             for pkg_name, pkg_data in parsed.get("packages", {}).items():
                 if not self.has(pkg_name):
                     pkg_data["folder_path"] = pkg_folder
-                    reg_key = f"{pkg_folder}/{pkg_name}" if pkg_folder else pkg_name
-                    self.register(pkg_data, reg_key)
+                    self.register(pkg_data, f"{pkg_folder}/{pkg_name}" if pkg_folder else pkg_name)
             for inc in parsed.get("includes", []):
                 inc_path = os.path.normpath(os.path.join(base_dir, inc))
                 if os.path.exists(inc_path):
@@ -278,5 +277,21 @@ class PackageRegistry:
             pkg_name = parsed["name"]
             if not self.has(pkg_name):
                 parsed["folder_path"] = pkg_folder
-                reg_key = norm_rel if norm_rel else pkg_name
-                self.register(parsed, reg_key)
+                self.register(parsed, norm_rel if norm_rel else pkg_name)
+
+    def register_external_manifest(self, manifest_path: str, pkg_key: str) -> bool:
+        """Догружает внешний манифест из state.json только если пакет отсутствует в основном реестре запуска."""
+        if self.has(pkg_key) or not manifest_path or not os.path.isfile(manifest_path):
+            return self.has(pkg_key)
+        try:
+            abs_mf = os.path.abspath(manifest_path)
+            parsed = self.parser.parse_file(abs_mf)
+            short_name = pkg_key.split("/")[-1]
+            cand = (parsed.get("packages", {}).get(short_name) or parsed.get("packages", {}).get(pkg_key)) if parsed.get("is_multi_package") else parsed
+            if not isinstance(cand, dict) or cand.get("is_category"):
+                return False
+            cand = dict(cand, is_external_manifest=True, manifest_path=abs_mf, folder_path="")
+            self.register(cand, pkg_key)
+            return True
+        except Exception:
+            return False

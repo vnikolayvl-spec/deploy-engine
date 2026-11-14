@@ -124,17 +124,17 @@ class TestRemoteModes(unittest.TestCase):
         self.assertTrue(deployer.is_full_mode())
         self.assertEqual(deployer.probe_remote_engine(), custom_dir)
 
-        # 1. Выполнение backup в полном режиме вызывает серверный deploy.py с --comment
+        # 1. Выполнение backup в полном режиме вызывает серверный main.py/deploy.py с --comment
         deployer.execute_remote(["vpn-agent"], action="backup", engine=engine)
-        self.assertTrue(any("deploy.py backup vpn-agent" in c and "--comment" in c for c in cmds))
+        self.assertTrue(any("backup vpn-agent" in c and "--comment" in c for c in cmds))
 
         # 2. Выполнение restore в полном режиме передает селектор --backup 2
         deployer.execute_remote(["vpn-agent"], action="restore", engine=engine)
-        self.assertTrue(any("deploy.py restore vpn-agent" in c and "--backup 2" in c for c in cmds))
+        self.assertTrue(any("restore vpn-agent" in c and "--backup 2" in c for c in cmds))
 
-        # 3. Выполнение info в полном режиме синхронизирует метаданные и вызывает deploy.py info
+        # 3. Выполнение info в полном режиме синхронизирует метаданные и вызывает info
         deployer.execute_remote(["vpn-agent"], action="info", engine=engine)
-        self.assertTrue(any("deploy.py info vpn-agent" in c for c in cmds))
+        self.assertTrue(any("info vpn-agent" in c for c in cmds))
 
         # 4. Подготовка Клиент-Серверного Remote TUI (Вариант 2) загружает состояние сервера в локальный Engine
         resolved_dir = deployer.prepare_remote_tui(engine)
@@ -144,7 +144,7 @@ class TestRemoteModes(unittest.TestCase):
 
         # 5. Выполнение плана из Remote TUI отправляет команды на удаленный сервер
         deployer.execute_tui_plan({"vpn-agent": "reinstall"}, engine)
-        self.assertTrue(any("deploy.py reinstall vpn-agent" in c for c in cmds))
+        self.assertTrue(any("reinstall vpn-agent" in c for c in cmds))
 
     def test_deploy_config_hierarchy_and_dual_mode_paths(self):
         """
@@ -197,10 +197,15 @@ class TestRemoteModes(unittest.TestCase):
 
     def test_self_package_installation_in_sandbox(self):
         """
-        Проверка самоустановки пакета deploy-engine по его собственному manifest.json в песочнице:
-        развертывание /opt/de_deploy-engine/files, /etc/default/de_deploy-engine/deploy-engine.env,
-        /var/lib/de_deploy-engine/{packages,backup,env} и лаунчеров в /usr/local/bin.
+        Проверка самоустановки пакета deploy-engine по его собственному manifest.json (без post_install):
+        - автоматические права 0755 на /opt/de_deploy-engine/files/main.py;
+        - декларативное создание /var/lib/de_deploy-engine/{packages,backup,env};
+        - отображение всех созданных системных путей (включая родительские папки и dirs) в info;
+        - вывод подсказки ручного удаления оставшихся системных каталогов при uninstall.
         """
+        import stat
+        from lib.state.package_inspector import PackageInspector
+
         pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         sb_dir = os.path.join(self.test_dir, "self_install_sb")
         ctx = ExecutionContext(non_interactive=True, sandbox=True, sandbox_os="debian", sandbox_dir=sb_dir)
@@ -210,7 +215,9 @@ class TestRemoteModes(unittest.TestCase):
         self.assertTrue(engine.registry.has("deploy-engine"))
         engine.install_packages(["deploy-engine"])
 
-        self.assertTrue(os.path.isfile(os.path.join(sb_dir, "opt/de_deploy-engine/files/deploy.py")))
+        main_py_dest = os.path.join(sb_dir, "opt/de_deploy-engine/files/main.py")
+        self.assertTrue(os.path.isfile(main_py_dest))
+        self.assertEqual(stat.S_IMODE(os.stat(main_py_dest).st_mode), 0o755)
         self.assertTrue(os.path.isfile(os.path.join(sb_dir, "opt/de_deploy-engine/files/lib/config.py")))
         self.assertTrue(os.path.isfile(os.path.join(sb_dir, "etc/default/de_deploy-engine/deploy-engine.env")))
         self.assertTrue(os.path.isfile(os.path.join(sb_dir, "usr/local/bin/deploy-engine.sh")))
@@ -220,6 +227,59 @@ class TestRemoteModes(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(sb_dir, "var/lib/de_deploy-engine/packages")))
         self.assertTrue(os.path.isdir(os.path.join(sb_dir, "var/lib/de_deploy-engine/backup")))
         self.assertTrue(os.path.isdir(os.path.join(sb_dir, "var/lib/de_deploy-engine/env")))
+
+        inspector = PackageInspector(state_repo=engine.state_repo, engine=engine)
+        info = inspector.get_package_info("deploy-engine")
+        info_paths = [f["path"] for f in info["files"]]
+        self.assertIn(os.path.join(sb_dir, "opt/de_deploy-engine"), info_paths)
+        self.assertIn(os.path.join(sb_dir, "etc/default/de_deploy-engine"), info_paths)
+        self.assertIn(os.path.join(sb_dir, "var/lib/de_deploy-engine"), info_paths)
+        self.assertIn(os.path.join(sb_dir, "var/lib/de_deploy-engine/packages"), info_paths)
+
+        engine.uninstall_package("deploy-engine")
+        self.assertFalse(os.path.exists(main_py_dest))
+        self.assertTrue(os.path.isdir(os.path.join(sb_dir, "etc/default/de_deploy-engine")))
+        self.assertTrue(os.path.isdir(os.path.join(sb_dir, "var/lib/de_deploy-engine")))
+
+    def test_main_mode_resolution_and_keyboard_interrupt_rollback(self):
+        """
+        Проверка единой точки входа main.py (маршрутизация CLI vs TUI)
+        и автоматического отката транзакции (LIFO) при нажатии Ctrl+C (KeyboardInterrupt).
+        """
+        from main import build_parser, resolve_mode_and_targets
+
+        parser = build_parser()
+        # 1. Маршрутизация: без CLI-команды -> TUI, с командой или --info -> CLI
+        self.assertEqual(resolve_mode_and_targets(parser.parse_args([]))[0], "tui")
+        self.assertEqual(resolve_mode_and_targets(parser.parse_args([self.repo_dir]))[0], "tui")
+        self.assertEqual(resolve_mode_and_targets(parser.parse_args(["--sandbox", "macos"]))[0], "tui")
+        self.assertEqual(resolve_mode_and_targets(parser.parse_args(["--tui"]))[0], "tui")
+        self.assertEqual(resolve_mode_and_targets(parser.parse_args(["install", "vpn-agent"])), ("install", ["vpn-agent"]))
+        self.assertEqual(resolve_mode_and_targets(parser.parse_args(["list"]))[0], "list")
+        self.assertEqual(resolve_mode_and_targets(parser.parse_args(["--info", "vpn-agent"])), ("info", ["vpn-agent"]))
+        self.assertEqual(resolve_mode_and_targets(parser.parse_args(["help"]))[0], "help")
+
+        # 2. KeyboardInterrupt во время установки вызывает откат транзакции и пробрасывает KeyboardInterrupt
+        sb_dir = os.path.join(self.test_dir, "ctrl_c_sb")
+        ctx = ExecutionContext(non_interactive=True, sandbox=True, sandbox_os="debian", sandbox_dir=sb_dir)
+        engine = Engine(context=ctx)
+        engine.discover_packages(search_roots=[self.repo_dir], force_rescan=True)
+
+        created_marker = os.path.join(sb_dir, "usr/local/bin/partial_file.sh")
+        os.makedirs(os.path.dirname(created_marker), exist_ok=True)
+        with open(created_marker, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\n")
+        engine.txn.record_created_file(created_marker)
+
+        def interrupted_hook(*args, **kwargs):
+            raise KeyboardInterrupt()
+
+        engine.file_installer.install_file = interrupted_hook
+        with self.assertRaises(KeyboardInterrupt):
+            engine.install_packages(["vpn-agent"])
+
+        # Файл, записанный в рамках прерванной транзакции, должен быть откачен (удален)
+        self.assertFalse(os.path.exists(created_marker))
 
 
 if __name__ == "__main__":

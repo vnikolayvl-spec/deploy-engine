@@ -71,14 +71,27 @@ class DataUnitInstaller:
 
     def remove_data(self, pkg_name: str, purge: bool = False) -> None:
         """
-        Удаляет каталог данных пакета только при purge=True.
+        Удаляет каталог данных пакета только при purge=True с проверкой pkg_name на пустоту.
         При обычном uninstall данные сохраняются!
         """
-        data_dir = self.get_data_dir(pkg_name)
+        clean_pkg = (pkg_name or "").strip()
+        if not clean_pkg or "/" in clean_pkg or clean_pkg in (".", "..") or "*" in clean_pkg:
+            self.context.log("🛑 Пропуск удаления данных: пустое или некорректное имя пакета.")
+            return
+
+        data_dir = os.path.normpath(self.get_data_dir(clean_pkg))
+        expected_tail = f"{DATA_PREFIX}{clean_pkg}"
+        if os.path.basename(data_dir) != expected_tail or len([s for s in data_dir.strip("/").split("/") if s]) < 2:
+            self.context.log(f"🛑 Заблокировано удаление некорректного пути данных: {data_dir}")
+            return
+
         if not os.path.exists(data_dir):
             return
 
         if purge:
+            if self.context.dry_run:
+                self.context.log(f"🔎 [DRY-RUN][PURGE] Полное удаление каталога данных: {data_dir}")
+                return
             self.context.log(f"🔥 [PURGE] Полное удаление каталога данных: {data_dir}")
             shutil.rmtree(data_dir, ignore_errors=True)
         else:

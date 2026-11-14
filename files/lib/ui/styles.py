@@ -136,4 +136,44 @@ EnvEditorModal {
     height: auto;
     align: center middle;
 }
+PackageDetailsModal, ExecutionModal {
+    align: center middle;
+}
+#pkg_modal_dialog, #exec_modal_dialog {
+    width: 86%;
+    height: 84%;
+    border: thick $accent;
+    background: $panel;
+    padding: 1 2;
+}
+#pkg_modal_title, #exec_modal_title {
+    color: $accent;
+    text-style: bold;
+    margin-bottom: 1;
+}
+#exec_modal_status {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+#pkg_modal_tabs {
+    height: auto;
+    margin-bottom: 1;
+}
+#pkg_modal_tabs Button {
+    margin-right: 1;
+}
+#pkg_details_log, #exec_modal_log {
+    height: 1fr;
+    border: solid $primary-darken-1;
+    background: $surface;
+    padding: 1;
+    margin-bottom: 1;
+}
+#pkg_modal_actions, #exec_modal_buttons {
+    height: auto;
+    align: center middle;
+}
+#pkg_modal_actions Button {
+    margin-right: 1;
+}
 """

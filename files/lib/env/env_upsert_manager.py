@@ -142,12 +142,25 @@ class EnvUpsertManager:
         return True
 
     def remove_env(self, pkg_name: str, purge: bool = False) -> None:
-        """Удаляет системный каталог ENV пакета только при purge=True."""
-        env_dir = self.get_env_dir(pkg_name)
+        """Удаляет системный каталог ENV пакета только при purge=True с проверкой pkg_name на пустоту."""
+        clean_pkg = (pkg_name or "").strip()
+        if not clean_pkg or "/" in clean_pkg or clean_pkg in (".", "..") or "*" in clean_pkg:
+            self.context.log("🛑 Пропуск удаления ENV: пустое или некорректное имя пакета.")
+            return
+
+        env_dir = os.path.normpath(self.get_env_dir(clean_pkg))
+        expected_tail = f"{ENV_PREFIX}{clean_pkg}"
+        if os.path.basename(env_dir) != expected_tail or len([s for s in env_dir.strip("/").split("/") if s]) < 2:
+            self.context.log(f"🛑 Заблокировано удаление некорректного каталога ENV: {env_dir}")
+            return
+
         if not os.path.exists(env_dir):
             return
 
         if purge:
+            if self.context.dry_run:
+                self.context.log(f"🔎 [DRY-RUN][PURGE] Удаление каталога окружения и секретов: {env_dir}")
+                return
             self.context.log(f"🔥 [PURGE] Удаление каталога окружения и секретов: {env_dir}")
             shutil.rmtree(env_dir, ignore_errors=True)
         else:
@@ -186,8 +199,13 @@ class EnvUpsertManager:
                     sys.stdout.write(prompt_msg)
                     sys.stdout.flush()
                     with open("/dev/tty", "r", encoding="utf-8") as tty:
-                        user_input = tty.readline().strip()
+                        line = tty.readline()
+                        if line == "":
+                            raise KeyboardInterrupt()
+                        user_input = line.strip()
                     return user_input if user_input else default_val
+                except KeyboardInterrupt:
+                    raise
                 except Exception:
                     return default_val
 

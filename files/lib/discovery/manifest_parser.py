@@ -142,11 +142,14 @@ class ManifestParser:
             "sys_packages": sys_packages,
             "python_packages": list(data.get("python_packages", [])),
             "node_packages": list(data.get("node_packages", [])),
+            "dirs": list(data.get("dirs", [])) if isinstance(data.get("dirs"), list) else [],
+            "chmod": list(data.get("chmod", [])) if isinstance(data.get("chmod"), list) else [],
             "units": dict(data.get("units", {})),
             "pre_install": data.get("pre_install"),
             "post_install": data.get("post_install"),
             "pre_uninstall": data.get("pre_uninstall"),
             "post_uninstall": data.get("post_uninstall"),
             "base_dir": base_dir,
+            "manifest_path": os.path.join(os.path.abspath(base_dir), "manifest.json"),
         }
         return normalized

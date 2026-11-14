@@ -30,34 +30,13 @@ class TestCrossPlatformProviders(unittest.TestCase):
 
     def test_systemd_to_plist_converter_with_timer_and_static_env(self):
         """Проверка автоматической конвертации .service + .timer + .env в launchd XML .plist."""
-        service_content = """
-[Unit]
-Description=Sync Worker
-
-[Service]
-WorkingDirectory=/opt/de_sync-pkg/files
-Environment="LOG_LEVEL=info"
-ExecStart=/usr/local/bin/sync-worker.sh --daemon
-Restart=on-failure
-"""
-        timer_content = """
-[Unit]
-Description=Run Sync Worker every 15 minutes
-
-[Timer]
-OnUnitActiveSec=15m
-"""
+        service_content = "[Unit]\nDescription=Sync Worker\n[Service]\nWorkingDirectory=/opt/de_sync-pkg/files\nEnvironment=\"LOG_LEVEL=info\"\nExecStart=/usr/local/bin/sync-worker.sh --daemon\nRestart=on-failure\n"
+        timer_content = "[Unit]\nDescription=Run Sync Worker every 15 minutes\n[Timer]\nOnUnitActiveSec=15m\n"
         static_env = SystemdToPlistConverter.parse_env_text('API_TOKEN="secret_123"\nWORKER_PORT=8080\n')
-
         xml_str = SystemdToPlistConverter.convert_to_xml(
-            pkg_name="sync-pkg",
-            unit_name="sync-worker.service",
-            service_text=service_content,
-            timer_text=timer_content,
-            env_vars=static_env,
+            pkg_name="sync-pkg", unit_name="sync-worker.service", service_text=service_content, timer_text=timer_content, env_vars=static_env
         )
         parsed = plistlib.loads(xml_str.encode("utf-8"))
-
         self.assertEqual(parsed["Label"], "com.deploy-engine.sync-pkg.sync-worker")
         self.assertEqual(parsed["ProgramArguments"], ["/usr/local/bin/sync-worker.sh", "--daemon"])
         self.assertEqual(parsed["WorkingDirectory"], "/opt/de_sync-pkg/files")
@@ -261,6 +240,51 @@ OnUnitActiveSec=15m
         formatted = inspector.format_package_info("dns-agent")
         self.assertIn("Агент обновления DNS", formatted)
         self.assertIn("Основной скрипт агента", formatted)
+
+    def test_apt_cache_ttl_and_safe_uninstall_guards(self):
+        """Проверка 60-минутного TTL кэша пакетов (apt/apk/pacman) и защиты от пустых путей/списков при удалении."""
+        import time
+        from lib.installer.file_installer import FileInstaller
+        from lib.lifecycle.hook_executor import HookExecutor
+        from lib.providers.linux_provider import LinuxProvider
+
+        lp = LinuxProvider(ExecutionContext())
+        apt_dir = os.path.join(self.test_dir, "apt_lists")
+        os.makedirs(os.path.join(apt_dir, "partial"), exist_ok=True)
+        open(os.path.join(apt_dir, "lock"), "w").close()
+        stamp = os.path.join(self.test_dir, "apt.stamp")
+
+        # 1. Только служебные lock/partial -> кэш считается пустым -> требуется update
+        self.assertTrue(lp.needs_cache_update("apt-get", ttl_seconds=3600, cache_dir_override=apt_dir, stamp_path_override=stamp))
+
+        # 2. Появился свежий индекс (< 60 мин) -> update НЕ требуется
+        idx_file = os.path.join(apt_dir, "deb.debian.org_Packages")
+        open(idx_file, "w").close()
+        self.assertFalse(lp.needs_cache_update("apt-get", ttl_seconds=3600, cache_dir_override=apt_dir, stamp_path_override=stamp))
+
+        # 3. Индекс старше 60 минут (4000 сек) -> требуется update
+        old_ts = time.time() - 4000
+        os.utime(idx_file, (old_ts, old_ts))
+        self.assertTrue(lp.needs_cache_update("apt-get", ttl_seconds=3600, cache_dir_override=apt_dir, stamp_path_override=stamp))
+
+        # 4. Защита от пустых переменных вида TEST_LIST_RM="" -> rm ${TEST_LIST_RM}/* и запрет rm во всех хуках манифеста
+        for bad_path in ("", "   ", "/", "/*", "/opt/*", "/opt", "/etc/default", "/var/lib", "/opt/de_", "relative/path"):
+            self.assertFalse(FileInstaller.is_safe_to_remove(bad_path), f"Должен блокироваться путь: {bad_path}")
+        self.assertTrue(FileInstaller.is_safe_to_remove("/opt/de_my-pkg"))
+        self.assertTrue(FileInstaller.is_safe_to_remove("/opt/de_my-pkg/files/main.py"))
+        self.assertFalse(HookExecutor.is_safe_shell_command("rm -rf /*"))
+        self.assertFalse(HookExecutor.is_safe_shell_command("echo start; rm /*"))
+        self.assertFalse(HookExecutor.is_safe_shell_command("rm -f /tmp/somefile", disallow_all_rm=True))
+        self.assertFalse(HookExecutor.is_safe_shell_command("echo 1 && sudo rm -rf /opt/de_test", disallow_all_rm=True))
+
+        # 5. Защита Engine.uninstall_package от пустого имени, пустого списка удаления и блокировка rm в post_install
+        engine = Engine(ExecutionContext(sandbox=True, sandbox_os="debian", sandbox_dir=os.path.join(self.test_dir, "sb_uninst")))
+        with self.assertRaises(DeployEngineError):
+            engine.uninstall_package("")
+        self.assertFalse(engine.uninstall_package("nonexistent-pkg"))
+        for hook_name in ("pre_install", "post_install", "pre_uninstall", "post_uninstall"):
+            with self.assertRaises(DeployEngineError):
+                engine.hook_executor.run_hook(hook_name, ["rm -rf /tmp/test"], "my-pkg")
 
 
 if __name__ == "__main__":

@@ -83,10 +83,20 @@ class UnitPathResolver:
             "{{BASE_DIR}}": base_dir_abs,
             "{{SYS_BIN}}": sys_bin,
             "{{SYS_SYSTEMD}}": sys_systemd,
+            "{{ENV_PATH}}": env_path,
+            "{{STATE_DIR}}": state_dir,
+            "{{OPT_DIR}}": opt_dir,
+            "{{ENV_DIR}}": os.path.join(env_path, f"{ENV_PREFIX}{pkg_name}"),
+            "{{DATA_DIR}}": os.path.join(state_dir, f"{DATA_PREFIX}{pkg_name}"),
         }
 
+        if unit_type in ("directory", "mkdir"):
+            unit_type = "dir"
+
         # 1. Вычисление исходного пути (src_path)
-        if unit_type == "symlink":
+        if unit_type == "dir":
+            src_path = ""
+        elif unit_type == "symlink":
             raw_src = str(unit_spec.get("symlink") or unit_spec.get("src") or clean_name)
             for marker, real_val in context_vars.items():
                 raw_src = raw_src.replace(marker, real_val)
@@ -112,9 +122,9 @@ class UnitPathResolver:
             else:
                 src_path = file_src_rel
 
-        # 2. Вычисление целевого пути (dest_path) и прав доступа (mode)
-        custom_dest = unit_spec.get("dest") or unit_spec.get("target")
-        raw_mode = unit_spec.get("mode")
+        # 2. Вычисление целевого пути (dest_path) и прав доступа (mode / chmod)
+        custom_dest = unit_spec.get("dest") or unit_spec.get("target") or unit_spec.get("path")
+        raw_mode = unit_spec.get("mode") if unit_spec.get("mode") is not None else unit_spec.get("chmod")
         if isinstance(raw_mode, str):
             custom_mode: Optional[int] = int(raw_mode, 8)
         elif isinstance(raw_mode, int):
@@ -158,6 +168,10 @@ class UnitPathResolver:
         elif unit_type == "symlink":
             default_dest = os.path.join(sys_bin, os.path.basename(clean_name))
             default_mode = 0o777
+
+        elif unit_type == "dir":
+            default_dest = os.path.join(state_dir, f"{DATA_PREFIX}{pkg_name}", clean_name)
+            default_mode = 0o755
 
         elif unit_type == "file":
             base_files_dir = os.path.join(opt_dir, f"de_{pkg_name}", "files")

@@ -78,6 +78,7 @@ class StateRepository:
             "files": list(dict.fromkeys(raw_entry.get("files", []))),
             "namespace": str(raw_entry.get("namespace") or pkg_key),
             "desc": str(raw_entry.get("desc") or raw_entry.get("description") or ""),
+            "manifest_path": str(raw_entry.get("manifest_path") or ""),
         }
 
     def _read_single_state_file(self, filepath: str) -> Dict[str, Dict[str, Any]]:
@@ -178,6 +179,7 @@ class StateRepository:
                     "files": list(dict.fromkeys(found_files)),
                     "namespace": reg_key,
                     "desc": str(pkg_info.get("description") or pkg_info.get("desc") or ""),
+                    "manifest_path": str(pkg_info.get("manifest_path") or os.path.join(os.path.abspath(base_dir), "manifest.json")),
                 }
         return detected
 
@@ -229,8 +231,9 @@ class StateRepository:
         files: List[str],
         namespace: Optional[str] = None,
         desc: str = "",
+        manifest_path: str = "",
     ) -> None:
-        """Регистрирует пакет как установленный."""
+        """Регистрирует пакет как установленный (с сохранением пути к manifest.json)."""
         current = self._read_single_state_file(self.state_file_path)
         current[pkg_name] = {
             "version": version,
@@ -238,6 +241,7 @@ class StateRepository:
             "files": list(dict.fromkeys(files)),
             "namespace": namespace or pkg_name,
             "desc": desc,
+            "manifest_path": str(manifest_path or ""),
         }
         self.save_state({"installed": current})
 

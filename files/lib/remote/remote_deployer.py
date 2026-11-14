@@ -31,19 +31,17 @@ class RemoteDeployer:
     def probe_remote_engine(self, force: bool = False) -> Optional[str]:
         """
         Проверяет наличие установленного deploy-engine на удаленном сервере
-        (в <remote_dir>/deploy.py или <remote_dir>/files/deploy.py).
+        (в <remote_dir>/main.py, <remote_dir>/files/main.py или старом deploy.py).
         Возвращает путь к рабочей директории движка на сервере или None (сокращенный режим).
         """
         if self._probed and not force:
             return self._resolved_remote_engine_dir
 
-        c1 = f"{self.remote_dir}/deploy.py"
-        c2 = f"{self.remote_dir}/files/deploy.py"
         q_dir = shlex.quote(self.remote_dir)
         q_files = shlex.quote(f"{self.remote_dir}/files")
         probe_cmd = (
-            f"if [ -f {shlex.quote(c1)} ]; then echo {q_dir}; "
-            f"elif [ -f {shlex.quote(c2)} ]; then echo {q_files}; "
+            f"if [ -f {shlex.quote(self.remote_dir + '/main.py')} ] || [ -f {shlex.quote(self.remote_dir + '/deploy.py')} ]; then echo {q_dir}; "
+            f"elif [ -f {shlex.quote(self.remote_dir + '/files/main.py')} ] || [ -f {shlex.quote(self.remote_dir + '/files/deploy.py')} ]; then echo {q_files}; "
             f"else echo '__MISSING__'; fi"
         )
         try:
@@ -79,7 +77,7 @@ class RemoteDeployer:
         """Считывает состояние установленных пакетов с удаленного хоста."""
         engine_dir = self.probe_remote_engine()
         if engine_dir:
-            cmd = f"cd {shlex.quote(engine_dir)} && sudo python3 deploy.py list --json 2>/dev/null || cat /etc/default/state.json 2>/dev/null || echo '{{\"installed\":{{}}}}'"
+            cmd = f"cd {shlex.quote(engine_dir)} && (sudo python3 main.py list --json 2>/dev/null || sudo python3 deploy.py list --json 2>/dev/null) || cat /etc/default/state.json 2>/dev/null || echo '{{\"installed\":{{}}}}'"
         else:
             cmd = "cat /etc/default/state.json 2>/dev/null || echo '{\"installed\":{}}'"
         try:
@@ -108,7 +106,7 @@ class RemoteDeployer:
             return {"os_family": "linux", "distro_id": "debian"}
 
     def _build_cli_flags(self) -> str:
-        """Формирует строку флагов CLI из ExecutionContext для удаленного вызова deploy.py."""
+        """Формирует строку флагов CLI из ExecutionContext для удаленного вызова main.py."""
         flags: List[str] = []
         if self.context.dry_run:
             flags.append("--dry-run")
@@ -202,7 +200,7 @@ class RemoteDeployer:
         targets_str = " ".join(shlex.quote(t) for t in targets)
         rescan_flag = "--rescan" if action in ("install", "reinstall", "info") else ""
         q_eng = shlex.quote(remote_engine_dir)
-        remote_cmd = f"cd {q_eng} && sudo python3 deploy.py {action} {targets_str} {rescan_flag} {flags_str}".strip()
+        remote_cmd = f"cd {q_eng} && ENTRY=$([ -f main.py ] && echo main.py || echo deploy.py) && sudo python3 \"$ENTRY\" {action} {targets_str} {rescan_flag} {flags_str}".strip()
         self.ssh_client.run_command(remote_cmd, capture_output=False)
 
     def _execute_reduced_mode(self, targets: List[str], action: str, engine=None) -> None:
@@ -252,7 +250,7 @@ class RemoteDeployer:
                 f"rm -rf {remote_dir} && mkdir -p {remote_dir} && "
                 f"tar -xzf {remote_archive} -C {remote_dir} && "
                 f"cd {remote_dir}/deploy_engine && "
-                f"sudo python3 deploy.py {action} {targets_str} --rescan {flags_str}; "
+                f"sudo python3 main.py {action} {targets_str} --rescan {flags_str}; "
                 f"RET=$?; rm -rf {remote_dir} {remote_archive}; exit $RET"
             )
             self.ssh_client.run_command(remote_cmd, capture_output=False)
@@ -283,14 +281,20 @@ class RemoteDeployer:
         engine.state_repo.state_file_path = tmp_state.name
         return remote_engine_dir
 
-    def execute_tui_plan(self, actions_plan: Dict[str, str], engine) -> None:
-        """Выполняет сформированный в локальном TUI план на удаленном сервере через серверный deploy-engine."""
-        to_uninstall = [k for k, v in actions_plan.items() if v == "uninstall" and engine.registry.has(k)]
-        to_reinstall = [k for k, v in actions_plan.items() if v == "reinstall" and engine.registry.has(k)]
-        to_install = [k for k, v in actions_plan.items() if v == "install" and engine.registry.has(k)]
-        for pkg in to_uninstall:
+    def execute_tui_plan(self, actions_plan: Dict[str, Any], engine) -> None:
+        """Выполняет сформированный в локальном TUI план на удаленном сервере (сначала бэкап, затем восстановление)."""
+        to_backup = [p for p in (actions_plan.get("__backup__") or []) if engine.registry.has(p)]
+        to_restore = {p: s for p, s in (actions_plan.get("__restore__") or {}).items() if s and engine.registry.has(p)}
+        if to_backup:
+            self.execute_remote(to_backup, action="backup", engine=engine)
+        for pkg, arch_sel in to_restore.items():
+            prev_sel, self.context.backup_selector = getattr(self.context, "backup_selector", None), arch_sel
+            self.execute_remote([pkg], action="restore", engine=engine)
+            self.context.backup_selector = prev_sel
+        for pkg in [k for k, v in actions_plan.items() if v == "uninstall" and engine.registry.has(k)]:
             self.execute_remote([pkg], action="uninstall", engine=engine)
-        for pkg in to_reinstall:
+        for pkg in [k for k, v in actions_plan.items() if v == "reinstall" and engine.registry.has(k)]:
             self.execute_remote([pkg], action="reinstall", engine=engine)
+        to_install = [k for k, v in actions_plan.items() if v == "install" and engine.registry.has(k)]
         if to_install:
             self.execute_remote(to_install, action="install", engine=engine)
