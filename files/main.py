@@ -288,7 +288,7 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n⚠️ Операция прервана пользователем (Ctrl+C).", file=sys.stderr)
+        print("\n❗ Операция прервана пользователем (Ctrl+C).", file=sys.stderr)
         sys.exit(130)
     except DeployEngineError as err:
         print(f"\n❌ Ошибка: {err}", file=sys.stderr)

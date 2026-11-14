@@ -136,7 +136,7 @@ class MacOSProvider(BaseEnvironmentProvider):
 
         if not pm:
             self.context.log(
-                f"⚠️ Пакетный менеджер macOS (brew/port) не найден. Пропуск системных пакетов: {', '.join(to_install)}"
+                f"❗ Пакетный менеджер macOS (brew/port) не найден. Пропуск системных пакетов: {', '.join(to_install)}"
             )
             return True
 

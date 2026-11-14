@@ -284,4 +284,3 @@ class DeployApp(App):
             if restores:
                 active_targets["__restore__"] = restores
             self._run_plan_in_modal(active_targets, clear_current_plan=True)
-

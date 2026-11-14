@@ -221,7 +221,7 @@ class StateRepository:
             os.chmod(self.state_file_path, 0o644)
             return True
         except Exception as err:
-            self.context.log(f"⚠️ Не удалось сохранить состояние в {self.state_file_path}: {err}")
+            self.context.log(f"❗ Не удалось сохранить состояние в {self.state_file_path}: {err}")
             return False
 
     def mark_installed(

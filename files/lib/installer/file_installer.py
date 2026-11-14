@@ -253,7 +253,7 @@ class FileInstaller:
             self.context.log_verbose(f"Удален: {norm_path}")
             return True
         except Exception as err:
-            self.context.log(f"⚠️ Не удалось удалить {norm_path}: {err}")
+            self.context.log(f"❗ Не удалось удалить {norm_path}: {err}")
             return False
 
     def install_plist_content(self, plist_xml: str, dest_path: str, mode: int = 0o644) -> bool:

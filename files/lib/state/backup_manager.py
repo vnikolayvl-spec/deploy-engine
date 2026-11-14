@@ -266,7 +266,7 @@ class BackupManager:
 
         comm = f' | 💬 "{chosen.get("comment")}"' if chosen.get("comment") else ""
         self.context.log(
-            f"♻️ Пакет '{canonical}' восстановлен из бэкапа [{chosen['index']}] {chosen['archive_name']} (путей: {len(restored_paths)}){comm}"
+            f"🔄 Пакет '{canonical}' восстановлен из бэкапа [{chosen['index']}] {chosen['archive_name']} (путей: {len(restored_paths)}){comm}"
         )
         return {**chosen, "restored_paths": restored_paths}
 

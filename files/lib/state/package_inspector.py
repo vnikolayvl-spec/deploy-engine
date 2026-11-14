@@ -285,4 +285,3 @@ class PackageInspector:
                 r = subprocess.run(["systemctl", "restart", u_name], capture_output=True, text=True, check=False)
                 results.append(f"🔄 systemctl restart {u_name}: {'OK' if r.returncode == 0 else (r.stderr or '').strip()}")
         return "\n".join(results)
-

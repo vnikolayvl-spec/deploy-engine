@@ -89,7 +89,7 @@ class HookExecutor:
                 self.context.log(f"🔎 [DRY-RUN] Выполнение хука {hook_name} для '{clean_pkg}': {rendered_cmd}")
                 continue
 
-            self.context.log(f"⚙️ Выполнение {hook_name} ({clean_pkg}): {rendered_cmd}")
+            self.context.log(f"🔧 Выполнение {hook_name} ({clean_pkg}): {rendered_cmd}")
             try:
                 res = subprocess.run(
                     rendered_cmd,

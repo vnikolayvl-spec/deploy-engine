@@ -125,4 +125,3 @@ class PackageDetailsModal(ModalScreen):
             self.dismiss({"action": "uninstall", "pkg_key": self.pkg_key})
         elif bid == "btn_pkg_install":
             self.dismiss({"action": "install", "pkg_key": self.pkg_key})
-

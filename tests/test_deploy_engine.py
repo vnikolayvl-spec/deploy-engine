@@ -266,31 +266,31 @@ class TestDeployEngine2Features(unittest.TestCase):
             self.assertEqual(f.read(), "PRODUCTION_USER_DATA")
 
     def test_infer_targets_and_folder_without_manifest_source(self):
-        """Проверка автоопределения пакета из манифеста и сканирования папки без корневого манифеста."""
+        """Проверка автоопределения пакета, игнорирования _template* и алиасов по имени папки."""
         root_without_manifest = os.path.join(self.test_dir, "packages_source")
         pkg_alpha_dir = os.path.join(root_without_manifest, "alpha-pkg")
-        pkg_multi_dir = os.path.join(root_without_manifest, "multi-pkg")
-        os.makedirs(pkg_alpha_dir, exist_ok=True)
-        os.makedirs(pkg_multi_dir, exist_ok=True)
+        pkg_multi_dir = os.path.join(root_without_manifest, "vpn-server", "amneziawg")
+        tpl_dir = os.path.join(root_without_manifest, "_template-py")
+        for d in (pkg_alpha_dir, pkg_multi_dir, tpl_dir):
+            os.makedirs(d, exist_ok=True)
 
         alpha_manifest = os.path.join(pkg_alpha_dir, "manifest.json")
         with open(alpha_manifest, "w") as f:
             json.dump({"name": "alpha-pkg", "desc": "Пакет Альфа", "units": {}}, f)
-
         multi_manifest = os.path.join(pkg_multi_dir, "manifest.json")
         with open(multi_manifest, "w") as f:
-            json.dump({"packages": {"multi-pkg": {"desc": "Основной"}, "multi": {"requires": ["multi-pkg"]}}, "units": {}}, f)
+            json.dump({"packages": {"awg": {"desc": "AmneziaWG"}, "awg-alias": {"requires": ["awg"]}}, "units": {}}, f)
+        with open(os.path.join(tpl_dir, "manifest.json"), "w") as f:
+            json.dump({"packages": {"template": {"desc": "Шаблон"}}, "units": {}}, f)
 
         engine = Engine()
-        # 1. Источник дерева пакетов — папка без манифеста в корне
         found = engine.load_manifest_recursive(root_without_manifest)
         self.assertGreaterEqual(found, 2)
-        self.assertTrue(engine.registry.has("alpha-pkg"))
-        self.assertTrue(engine.registry.has("multi-pkg"))
-
-        # 2. Автоопределение целевого пакета по пути к манифесту (исключая алиасы)
+        self.assertFalse(engine.registry.has("template"))
+        for query in ("awg", "vpn-server/awg", "amneziawg", "vpn-server/amneziawg"):
+            self.assertEqual(engine.registry.get(query)["name"], "awg")
         self.assertEqual(engine.infer_targets_from_manifest(alpha_manifest), ["alpha-pkg"])
-        self.assertEqual(engine.infer_targets_from_manifest(multi_manifest), ["multi-pkg"])
+        self.assertEqual(engine.infer_targets_from_manifest(multi_manifest), ["awg"])
 
 
 if __name__ == "__main__":

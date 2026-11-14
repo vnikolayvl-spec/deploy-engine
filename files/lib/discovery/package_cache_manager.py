@@ -56,7 +56,7 @@ class PackageCacheManager:
                     os.remove(tmp_file)
                 except OSError:
                     pass
-            print(f"⚠️ Не удалось записать кэш пакетов {self.cache_file_path}: {err}")
+            print(f"❗ Не удалось записать кэш пакетов {self.cache_file_path}: {err}")
             return False
 
     def invalidate(self) -> bool:

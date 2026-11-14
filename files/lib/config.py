@@ -136,7 +136,11 @@ def load_config(
 
     default_data_dir = prod_data_dir if is_prod else root_dir
     data_dir = effective_env.get("DE_DATA_DIR") or default_data_dir
-    default_pkgs_dir = os.path.join(data_dir, "packages") if is_prod else "./packages"
+    pkg_dir_names = ("packages", "deploy-packages", "deploy_packages")
+    if is_prod:
+        default_pkgs_dir = next((os.path.join(data_dir, d) for d in pkg_dir_names if os.path.isdir(os.path.join(data_dir, d))), os.path.join(data_dir, "packages"))
+    else:
+        default_pkgs_dir = next((f"./{d}" for d in pkg_dir_names if os.path.isdir(os.path.join(data_dir, d))), "./packages")
     pkgs_dir = effective_env.get("DE_PACKAGES_DIR") or default_pkgs_dir
     default_cache = os.path.join(data_dir, "packages.json") if is_prod else "packages.json"
     cache_file = effective_env.get("DE_PACKAGES_CACHE") or default_cache

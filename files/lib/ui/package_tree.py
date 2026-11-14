@@ -292,4 +292,3 @@ class InfrastructureTree(Tree):
             self.action_select_cursor()
             event.prevent_default()
             event.stop()
-

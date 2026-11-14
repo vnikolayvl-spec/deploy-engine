@@ -176,6 +176,10 @@ class TestRemoteModes(unittest.TestCase):
         self.assertEqual(standalone_cfg["LOCAL_ENV_DIR"], os.path.join(fake_root, "env"))
         self.assertEqual(standalone_cfg["DEFAULT_REMOTE_ENGINE_DIR"], "/custom/from_app_env")
 
+        os.makedirs(os.path.join(fake_root, "deploy-packages"), exist_ok=True)
+        hyphen_cfg = load_config(engine_root=fake_root, prod_config_path=Path(self.test_dir) / "nonexistent_prod.env", prod_data_dir=os.path.join(self.test_dir, "nonexistent_var_lib"), env_map={})
+        self.assertEqual(hyphen_cfg["PACKAGES_DIR"], "./deploy-packages")
+
         # 2. Системный продакшен-режим (/etc/default/de_deploy-engine/deploy-engine.env + /var/lib/de_deploy-engine)
         prod_env_file = Path(self.test_dir) / "deploy-engine.env"
         prod_env_file.write_text('DE_REMOTE_ENGINE_DIR="/opt/prod_remote_de"\n', encoding="utf-8")

@@ -67,7 +67,7 @@ def bootstrap_gui():
             print("🚀 Запуск графического интерфейса...")
             os.execv(venv_python, [venv_python] + sys.argv)
         except KeyboardInterrupt:
-            print("\n⚠️ Инициализация графического окружения прервана пользователем (Ctrl+C).", file=sys.stderr)
+            print("\n❗ Инициализация графического окружения прервана пользователем (Ctrl+C).", file=sys.stderr)
             sys.exit(130)
 
 

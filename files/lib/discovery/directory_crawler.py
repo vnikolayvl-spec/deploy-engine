@@ -22,7 +22,7 @@ class DirectoryCrawler:
 
     @classmethod
     def _is_ignored_dir(cls, dirname: str) -> bool:
-        return dirname.startswith(".") or dirname in cls.IGNORED_DIRS
+        return dirname.startswith(".") or dirname.startswith("_") or dirname in cls.IGNORED_DIRS
 
     @classmethod
     def _find_manifest_in_dir(cls, dir_path: str) -> Optional[str]:

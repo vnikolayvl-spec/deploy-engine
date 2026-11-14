@@ -140,4 +140,3 @@ class PlanPreviewLog(RichLog):
                         self.write(f"      🔐 [ENV]     {fname}{badge} ({desc}) -> {dest}")
                     else:
                         self.write(f"      🔹 [Файл]    {fname} ({desc}) -> {dest}")
-

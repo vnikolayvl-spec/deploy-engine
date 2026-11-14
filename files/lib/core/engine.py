@@ -75,7 +75,7 @@ class Engine:
             valid_roots = [r for r in search_roots if os.path.exists(r)]
         else:
             valid_roots, seen_abs = [], set()
-            for candidate in (PACKAGES_DIR, DEFAULT_PACKAGES_DIR, "deploy_packages", "deploy_packages/packages"):
+            for candidate in (PACKAGES_DIR, DEFAULT_PACKAGES_DIR, "packages", "deploy-packages", "deploy_packages", "deploy_packages/packages"):
                 if os.path.exists(candidate):
                     abs_c = os.path.abspath(candidate)
                     if abs_c not in seen_abs and not any(abs_c.startswith(s + os.sep) for s in seen_abs):
@@ -125,9 +125,9 @@ class Engine:
         self.context.log(f"{reason_msg}\n⏪ Запуск отката транзакции (LIFO)...")
         try:
             self.txn.rollback()
-            self.context.log("🛡️ Откат транзакции завершен успешно.")
+            self.context.log("🔒 Откат транзакции завершен успешно.")
         except Exception as rb_err:
-            self.context.log(f"⚠️ Ошибка при откате: {rb_err}")
+            self.context.log(f"❗ Ошибка при откате: {rb_err}")
 
     def install_packages(self, targets: List[str]) -> bool:
         """Транзакционная установка пакетов с проверкой совместимости ОС и автоматическим откатом."""
@@ -153,7 +153,7 @@ class Engine:
             self.context.log("🎉 Все пакеты успешно установлены!")
             return True
         except KeyboardInterrupt:
-            self._rollback_safely("\n⚠️ Установка прервана пользователем (Ctrl+C).")
+            self._rollback_safely("\n❗ Установка прервана пользователем (Ctrl+C).")
             raise
         except Exception as err:
             self._rollback_safely(f"💥 Сбой при установке пакетов: {err}")
@@ -254,12 +254,12 @@ class Engine:
 
         files_to_remove = list(dict.fromkeys([str(f).strip() for f in raw_files if f and str(f).strip()]))
         if not state_entry and not pkg_info and not files_to_remove:
-            self.context.log(f"\n🗑️ Удаление пакета: {canonical_name}\n⚠️ Пакет '{canonical_name}' не найден в установленных и список файлов на удаление пуст.")
+            self.context.log(f"\n🧹 Удаление пакета: {canonical_name}\n❗ Пакет '{canonical_name}' не найден в установленных и список файлов на удаление пуст.")
             return False
 
         data_pkg_dir = os.path.join(paths["state_dir"], f"{DATA_PREFIX}{canonical_name}")
         with self.context.package_operation_log("" if self.context.purge else data_pkg_dir, canonical_name, "uninstall"):
-            self.context.log(f"\n🗑️ Удаление пакета: {canonical_name}")
+            self.context.log(f"\n🧹 Удаление пакета: {canonical_name}")
             has_systemd = self._stop_package_services(canonical_name, files_to_remove, base_dir)
             if pkg_info and pkg_info.get("pre_uninstall"): self.hook_executor.run_hook("pre_uninstall", pkg_info["pre_uninstall"], canonical_name, base_dir)
             opt_pkg_dir = os.path.join(paths.get("opt_dir", "/opt"), f"de_{canonical_name}")

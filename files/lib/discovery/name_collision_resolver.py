@@ -15,13 +15,15 @@ class NameCollisionResolver:
         # Множество всех зарегистрированных полных неймспейсов
         self._all_namespaces: set = set()
 
-    def register_package(self, namespace: str, short_name: str) -> None:
-        """Регистрирует пару неймспейс и короткое имя."""
+    def register_package(self, namespace: str, short_name: str, aliases: Optional[List[str]] = None) -> None:
+        """Регистрирует канонический неймспейс, короткое имя и дополнительные алиасы (например, по имени папки)."""
         self._all_namespaces.add(namespace)
-        if short_name not in self._short_to_namespaces:
-            self._short_to_namespaces[short_name] = []
-        if namespace not in self._short_to_namespaces[short_name]:
-            self._short_to_namespaces[short_name].append(namespace)
+        names_to_index = [short_name] + [a for a in (aliases or []) if a]
+        for key in names_to_index:
+            if key not in self._short_to_namespaces:
+                self._short_to_namespaces[key] = []
+            if namespace not in self._short_to_namespaces[key]:
+                self._short_to_namespaces[key].append(namespace)
 
     def resolve(self, query: str) -> str:
         """

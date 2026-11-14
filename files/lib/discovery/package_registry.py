@@ -22,8 +22,8 @@ class PackageRegistry:
         self.category_parser = CategoryManifestParser()
         self.cache_manager = PackageCacheManager(cache_file)
 
-    def register(self, package_data: Dict[str, Any], namespace: Optional[str] = None) -> str:
-        """Регистрирует нормализованный пакет в реестре."""
+    def register(self, package_data: Dict[str, Any], namespace: Optional[str] = None, aliases: Optional[List[str]] = None) -> str:
+        """Регистрирует нормализованный пакет в реестре вместе с алиасами имени папки на диске."""
         name = package_data["name"]
         pkg_namespace = namespace or name
         package_data["namespace"] = pkg_namespace
@@ -31,8 +31,13 @@ class PackageRegistry:
             package_data["folder_path"] = os.path.dirname(pkg_namespace) if "/" in pkg_namespace else ""
         if "active" not in package_data:
             package_data["active"] = True
+        dir_ns = str(package_data.get("dir_namespace") or "").strip("/")
+        auto_aliases = [a for a in ([dir_ns, os.path.basename(dir_ns)] if dir_ns else []) if a and a not in (pkg_namespace, name)]
+        all_aliases = list(dict.fromkeys((package_data.get("aliases") or []) + (aliases or []) + auto_aliases))
+        if all_aliases:
+            package_data["aliases"] = all_aliases
         self.packages[pkg_namespace] = package_data
-        self.resolver.register_package(pkg_namespace, name)
+        self.resolver.register_package(pkg_namespace, name, aliases=all_aliases)
         return pkg_namespace
 
     def register_folder(self, folder_path: str, folder_info: Dict[str, Any]) -> None:
@@ -40,11 +45,7 @@ class PackageRegistry:
         norm_path = "." if folder_path in ("", ".") else folder_path.strip("/")
         existing = self.folders.get(norm_path, {})
         raw_active = folder_info.get("active") if "active" in folder_info else folder_info.get("enabled")
-        if raw_active is None and "active" in existing:
-            active = bool(existing["active"])
-        else:
-            active = CategoryManifestParser.parse_bool(raw_active, default=True)
-
+        active = bool(existing["active"]) if (raw_active is None and "active" in existing) else CategoryManifestParser.parse_bool(raw_active, default=True)
         desc = str(folder_info.get("desc") or folder_info.get("description") or existing.get("desc") or "").strip()
         base_dir = str(folder_info.get("base_dir") or existing.get("base_dir") or "")
         default_name = os.path.basename(os.path.abspath(base_dir or ".")) if norm_path == "." else os.path.basename(norm_path)
@@ -52,17 +53,11 @@ class PackageRegistry:
         title = str(folder_info.get("title") or folder_info.get("name") or existing.get("title") or name).strip() or default_name
 
         self.folders[norm_path] = {
-            "type": "category",
-            "name": name,
-            "title": title,
-            "desc": desc,
-            "description": desc,
-            "active": active,
-            "platforms": list(folder_info.get("platforms") or existing.get("platforms") or []),
+            "type": "category", "name": name, "title": title, "desc": desc, "description": desc,
+            "active": active, "platforms": list(folder_info.get("platforms") or existing.get("platforms") or []),
             "order": int(folder_info.get("order", existing.get("order", 100))),
             "meta": dict(folder_info.get("meta") or existing.get("meta") or {}),
-            "base_dir": base_dir,
-            "folder_path": "" if norm_path == "." else norm_path,
+            "base_dir": base_dir, "folder_path": "" if norm_path == "." else norm_path,
         }
 
     def _ensure_ancestor_folders(self, folder_path: str, root_dir: str = "") -> None:
@@ -84,10 +79,7 @@ class PackageRegistry:
                     continue
                 except Exception:
                     pass
-            self.register_folder(
-                rel_folder,
-                {"name": part, "title": part, "desc": "", "active": True, "order": 100, "base_dir": cand_dir},
-            )
+            self.register_folder(rel_folder, {"name": part, "title": part, "desc": "", "active": True, "order": 100, "base_dir": cand_dir})
 
     def is_folder_active(self, folder_path: str) -> bool:
         """Проверяет, активна ли сама категория и все ее родительские категории."""
@@ -98,8 +90,7 @@ class PackageRegistry:
         curr_parts: List[str] = []
         for part in parts:
             curr_parts.append(part)
-            prefix = "/".join(curr_parts)
-            f_info = self.folders.get(prefix)
+            f_info = self.folders.get("/".join(curr_parts))
             if f_info is not None and not f_info.get("active", True):
                 return False
         return True
@@ -114,15 +105,13 @@ class PackageRegistry:
         curr_parts: List[str] = []
         for part in parts:
             curr_parts.append(part)
-            prefix = "/".join(curr_parts)
-            f_info = self.folders.get(prefix)
+            f_info = self.folders.get("/".join(curr_parts))
             if f_info is not None and not provider.is_package_compatible(f_info):
                 return False
         return True
 
     def get(self, query: str) -> Dict[str, Any]:
-        target_namespace = self.resolver.resolve(query)
-        return self.packages[target_namespace]
+        return self.packages[self.resolver.resolve(query)]
 
     def has(self, query: str) -> bool:
         try:
@@ -169,17 +158,8 @@ class PackageRegistry:
         prefix = f"{ns}/"
         return any(other.startswith(prefix) for other in all_namespaces)
 
-    def scan_directories(
-        self,
-        search_roots: List[str],
-        force_rescan: bool = False,
-        save_cache: bool = True,
-    ) -> int:
-        """
-        Обходит дерево директорий любой вложенности:
-        - category.json задает параметры категории (необязателен, если достаточно имени папки).
-        - manifest.json задает пакеты.
-        """
+    def scan_directories(self, search_roots: List[str], force_rescan: bool = False, save_cache: bool = True) -> int:
+        """Обходит дерево директорий любой вложенности (category.json и manifest.json)."""
         if not force_rescan and self.load_from_cache():
             return len(self.packages)
 
@@ -214,6 +194,8 @@ class PackageRegistry:
                 if parsed.get("is_multi_package"):
                     for sub_name, sub_pkg in parsed.get("packages", {}).items():
                         sub_pkg["folder_path"] = pkg_folder
+                        if norm_ns and not has_children and not sub_pkg.get("is_alias"):
+                            sub_pkg["dir_namespace"] = norm_ns
                         reg_key = f"{pkg_folder}/{sub_name}" if pkg_folder else sub_name
                         self.register(sub_pkg, reg_key)
                     for inc in parsed.get("includes", []):
@@ -222,12 +204,14 @@ class PackageRegistry:
                             self.load_legacy_manifest(inc_path, root_base_dir=root_dir)
                 else:
                     parsed["folder_path"] = pkg_folder
+                    if norm_ns and not has_children:
+                        parsed["dir_namespace"] = norm_ns
                     pkg_name = parsed["name"]
                     reg_key = norm_ns if norm_ns else pkg_name
                     self.register(parsed, reg_key)
 
             except Exception as err:
-                print(f"⚠️ Ошибка загрузки манифеста {manifest_path}: {err}")
+                print(f"❗ Ошибка загрузки манифеста {manifest_path}: {err}")
 
         for folder_path in list(self.folders.keys()):
             if not self.is_folder_active(folder_path):
@@ -268,6 +252,8 @@ class PackageRegistry:
             for pkg_name, pkg_data in parsed.get("packages", {}).items():
                 if not self.has(pkg_name):
                     pkg_data["folder_path"] = pkg_folder
+                    if norm_rel and not pkg_data.get("is_alias"):
+                        pkg_data["dir_namespace"] = norm_rel
                     self.register(pkg_data, f"{pkg_folder}/{pkg_name}" if pkg_folder else pkg_name)
             for inc in parsed.get("includes", []):
                 inc_path = os.path.normpath(os.path.join(base_dir, inc))
@@ -277,6 +263,8 @@ class PackageRegistry:
             pkg_name = parsed["name"]
             if not self.has(pkg_name):
                 parsed["folder_path"] = pkg_folder
+                if norm_rel:
+                    parsed["dir_namespace"] = norm_rel
                 self.register(parsed, norm_rel if norm_rel else pkg_name)
 
     def register_external_manifest(self, manifest_path: str, pkg_key: str) -> bool:

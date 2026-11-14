@@ -130,7 +130,7 @@ class SandboxProvider(BaseEnvironmentProvider):
                 f.write(f"{self.distro_id}:{pm}:{pkg}\n")
 
         self.context.log(
-            f"🛡️ [SANDBOX:{self.distro_id}] Имитация установки пакетов через {pm}: {', '.join(unique_pkgs)}"
+            f"🔒 [SANDBOX:{self.distro_id}] Имитация установки пакетов через {pm}: {', '.join(unique_pkgs)}"
         )
         return True
 
