@@ -162,7 +162,7 @@ class LinuxProvider(BaseEnvironmentProvider):
 
         self.context.log(f"🔄 Обновление индекса пакетов ({' '.join(update_cmd)})...")
         try:
-            subprocess.run(update_cmd, check=True)
+            self.context.run_logged_subprocess(update_cmd)
             self._touch_stamp(self._get_stamp_path(pm))
         except subprocess.CalledProcessError as err:
             raise DeployEngineError(f"Ошибка при обновлении индекса пакетов ({' '.join(update_cmd)}): {err}")
@@ -201,8 +201,8 @@ class LinuxProvider(BaseEnvironmentProvider):
             cmd = [pm, "install", "-y"] + unique_pkgs
 
         try:
-            res = subprocess.run(cmd, check=True)
-            return res.returncode == 0
+            ret = self.context.run_logged_subprocess(cmd)
+            return ret == 0
         except subprocess.CalledProcessError as err:
             raise DeployEngineError(f"Ошибка при установке системных пакетов {unique_pkgs}: {err}")
         except FileNotFoundError:

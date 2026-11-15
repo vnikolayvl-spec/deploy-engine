@@ -50,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--remote", "-r", dest="remote", default=None, help="Удаленный хост [user@]host[:port]")
     parser.add_argument("--remote-dir", dest="remote_dir", default=DEFAULT_REMOTE_ENGINE_DIR, help=f"Путь к deploy-engine на удаленном сервере (по умолчанию {DEFAULT_REMOTE_ENGINE_DIR})")
     parser.add_argument("--config", dest="config_file", default=None, help="Путь к кастомному env-файлу конфигурации движка")
+    parser.add_argument("--yes", "-y", dest="non_interactive", action="store_true", help="Неинтерактивный режим (значения .env по умолчанию)")
     parser.add_argument("--json", dest="json_output", action="store_true", help="Вывод информации в формате JSON")
     parser.add_argument("--verbose", "-v", dest="verbose", action="store_true", help="Подробный отладочный вывод")
     return parser
@@ -147,6 +148,7 @@ def run_tui(args: argparse.Namespace, context: ExecutionContext) -> None:
     bootstrap_gui()
     from lib.ui_app import DeployApp
 
+    context.in_tui = True
     engine = Engine(context)
     _load_engine_sources(engine, args, "tui", [])
 
@@ -164,6 +166,7 @@ def run_tui(args: argparse.Namespace, context: ExecutionContext) -> None:
 
     app = DeployApp(engine, remote_deployer=remote_deployer)
     actions_plan = app.run()
+    context.in_tui = False
 
     if actions_plan and isinstance(actions_plan, dict):
         if remote_deployer:
@@ -268,6 +271,7 @@ def main() -> None:
         verbose=args.verbose,
         remote=args.remote,
         remote_dir=args.remote_dir,
+        non_interactive=args.non_interactive,
         rescan=args.rescan,
         json_output=args.json_output,
         sandbox=bool(args.sandbox_os is not None or args.sandbox_dir is not None),
@@ -276,6 +280,7 @@ def main() -> None:
         comment=args.comment,
         backup_selector=args.backup_selector,
         list_backups=args.list_backups,
+        in_tui=(action == "tui"),
     )
 
     if action == "tui":

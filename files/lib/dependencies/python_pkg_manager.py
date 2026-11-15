@@ -49,7 +49,7 @@ class PythonPackageManager:
                 cmd = [pip_bin, "install", item]
 
             try:
-                subprocess.run(cmd, check=True)
+                self.context.run_logged_subprocess(cmd)
             except subprocess.CalledProcessError as err:
                 raise DeployEngineError(f"Ошибка при установке Python зависимости '{item}': {err}")
         return True

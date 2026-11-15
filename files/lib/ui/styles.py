@@ -121,16 +121,78 @@ EnvEditorModal {
     height: 1fr;
     border: solid $primary-darken-1;
     background: $surface;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+.env_compact_row {
+    height: auto;
+    min-height: 1;
+    margin-bottom: 0;
+    padding: 0;
+    align: left middle;
+}
+.env_compact_label {
+    width: 52%;
+    height: auto;
+    color: $text;
+    padding-right: 1;
+}
+.env_compact_label_req {
+    width: 52%;
+    height: auto;
+    color: $warning;
+    text-style: bold;
+    padding-right: 1;
+}
+.env_compact_input {
+    width: 48%;
+    height: 1;
+    border: none;
+    background: $panel;
+    padding: 0 1;
+    margin: 0 0 1 0;
+}
+.env_collapsed_bar {
+    height: 3;
+    border: solid $success;
+    background: $surface;
+    padding: 0 1;
+    margin-bottom: 1;
+    align: left middle;
+}
+.env_collapsed_label {
+    width: 1fr;
+    color: $success;
+}
+.btn_env_compact {
+    min-width: 18;
+    height: 1;
+    border: none;
+}
+.env_inline_editor {
+    height: 1fr;
+    border: solid $warning;
+    background: $surface;
     padding: 1;
     margin-bottom: 1;
 }
-.env_field_label {
-    margin-top: 1;
-    margin-bottom: 0;
-    color: $text;
-}
-.env_field_input {
+.env_inline_title {
+    color: $accent;
+    text-style: bold;
     margin-bottom: 1;
+}
+.env_inline_scroll {
+    height: 1fr;
+    padding: 0 1;
+}
+.env_inline_footer {
+    height: auto;
+    padding-top: 1;
+    align: right middle;
+}
+.env_inline_status {
+    width: 1fr;
+    color: $warning;
 }
 #env_modal_buttons {
     height: auto;
@@ -140,8 +202,8 @@ PackageDetailsModal, ExecutionModal {
     align: center middle;
 }
 #pkg_modal_dialog, #exec_modal_dialog {
-    width: 86%;
-    height: 84%;
+    width: 90%;
+    height: 88%;
     border: thick $accent;
     background: $panel;
     padding: 1 2;
@@ -149,25 +211,32 @@ PackageDetailsModal, ExecutionModal {
 #pkg_modal_title, #exec_modal_title {
     color: $accent;
     text-style: bold;
-    margin-bottom: 1;
+    margin-bottom: 0;
 }
 #exec_modal_status {
     color: $text-muted;
     margin-bottom: 1;
 }
-#pkg_modal_tabs {
+#pkg_modal_tabs, #exec_modal_tabs {
     height: auto;
     margin-bottom: 1;
 }
-#pkg_modal_tabs Button {
+#pkg_modal_tabs Button, #exec_modal_tabs Button {
     margin-right: 1;
 }
-#pkg_details_log, #exec_modal_log {
+#exec_panes_container {
+    height: 1fr;
+    margin-bottom: 1;
+}
+.exec_pkg_pane {
+    height: 1fr;
+}
+#pkg_details_log, #exec_modal_log, .exec_pkg_log {
     height: 1fr;
     border: solid $primary-darken-1;
     background: $surface;
     padding: 1;
-    margin-bottom: 1;
+    margin-bottom: 0;
 }
 #pkg_modal_actions, #exec_modal_buttons {
     height: auto;

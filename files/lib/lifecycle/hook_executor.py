@@ -91,16 +91,16 @@ class HookExecutor:
 
             self.context.log(f"🔧 Выполнение {hook_name} ({clean_pkg}): {rendered_cmd}")
             try:
-                res = subprocess.run(
+                ret = self.context.run_logged_subprocess(
                     rendered_cmd,
                     shell=True,
-                    check=True,
                     cwd=pkg_dir,
                     env=hook_env,
                 )
-                if res.returncode != 0:
+                if ret != 0:
                     return False
             except subprocess.CalledProcessError as err:
-                raise DeployEngineError(f"Сбой при выполнении хука {hook_name} для пакета '{clean_pkg}': {err}")
+                details = (getattr(err, "stderr", None) or getattr(err, "output", None) or str(err)).strip()
+                raise DeployEngineError(f"Сбой при выполнении хука {hook_name} для пакета '{clean_pkg}': {details}")
 
         return True

@@ -155,8 +155,8 @@ class MacOSProvider(BaseEnvironmentProvider):
             cmd = [pm_bin, "install"] + to_install
 
         try:
-            res = subprocess.run(cmd, check=True)
-            return res.returncode == 0
+            ret = self.context.run_logged_subprocess(cmd)
+            return ret == 0
         except subprocess.CalledProcessError as err:
             raise DeployEngineError(f"Ошибка при установке пакетов через {pm} ({to_install}): {err}")
 

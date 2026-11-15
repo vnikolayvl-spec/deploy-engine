@@ -46,7 +46,7 @@ class NodePackageManager:
                 cwd = None
 
             try:
-                subprocess.run(cmd, cwd=cwd, check=True)
+                self.context.run_logged_subprocess(cmd, cwd=cwd)
             except subprocess.CalledProcessError as err:
                 raise DeployEngineError(f"Ошибка npm при установке '{item}': {err}")
         return True

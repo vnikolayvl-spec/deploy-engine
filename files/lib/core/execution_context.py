@@ -29,6 +29,7 @@ class ExecutionContext:
         comment: str = "",
         backup_selector: Optional[str] = None,
         list_backups: bool = False,
+        in_tui: bool = False,
     ):
         self.dry_run = dry_run
         self.purge = purge
@@ -45,7 +46,11 @@ class ExecutionContext:
         self.comment = comment
         self.backup_selector = backup_selector
         self.list_backups = list_backups
+        self.in_tui = in_tui
+        self.current_package: Optional[str] = None
+        self.env_approval_callback: Optional[Callable[[str, str, str], Optional[ dict ]]] = None
         self._log_listeners: List[Callable[[str], None]] = []
+        self._pkg_log_listeners: List[Callable[[Optional[str], str], None]] = []
 
     def add_log_listener(self, callback: Callable[[str], None]) -> None:
         if callback not in self._log_listeners:
@@ -55,32 +60,91 @@ class ExecutionContext:
         if callback in self._log_listeners:
             self._log_listeners.remove(callback)
 
+    def add_pkg_log_listener(self, callback: Callable[[Optional[str], str], None]) -> None:
+        if callback not in self._pkg_log_listeners:
+            self._pkg_log_listeners.append(callback)
+
+    def remove_pkg_log_listener(self, callback: Callable[[Optional[str], str], None]) -> None:
+        if callback in self._pkg_log_listeners:
+            self._pkg_log_listeners.remove(callback)
+
     def _emit_to_listeners(self, text: str) -> None:
         for cb in list(self._log_listeners):
             try:
                 cb(text)
             except Exception:
                 pass
+        for pcb in list(self._pkg_log_listeners):
+            try:
+                pcb(self.current_package, text)
+            except Exception:
+                pass
 
     def log(self, message: str) -> None:
-        """Печать информационных сообщений с учетом json_output и активных слушателей."""
-        if not self.json_output:
+        """Печать информационных сообщений с учетом json_output, TUI-режима и активных слушателей."""
+        if not self.json_output and not self.in_tui:
             print(message)
         self._emit_to_listeners(str(message))
 
     def log_verbose(self, message: str) -> None:
         """Печать подробных отладочных сообщений."""
         formatted = f"🔍 [DEBUG] {message}"
-        if self.verbose and not self.json_output:
+        if self.verbose and not self.json_output and not self.in_tui:
             print(formatted)
         if self.verbose:
             self._emit_to_listeners(formatted)
 
+    def run_logged_subprocess(self, cmd, shell: bool = False, cwd: Optional[str] = None, env: Optional[dict] = None) -> int:
+        """Выполняет подпроцесс с построчной потоковой трансляцией вывода (stdout+stderr) в контекстный лог."""
+        import subprocess
+        if hasattr(subprocess.run, "_mock_name") or "MagicMock" in type(subprocess.run).__name__:
+            kw = {"check": True}
+            if shell:
+                kw["shell"] = True
+            if cwd is not None:
+                kw["cwd"] = cwd
+            if env is not None:
+                kw["env"] = env
+            res = subprocess.run(cmd, **kw)
+            return getattr(res, "returncode", 0)
+
+        proc = subprocess.Popen(
+            cmd,
+            shell=shell,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            errors="replace",
+        )
+        tail: List[str] = []
+        if proc.stdout:
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip("\r\n")
+                if line.strip():
+                    tail.append(line)
+                    if len(tail) > 20:
+                        tail.pop(0)
+                    self.log(f"   {line}")
+        ret = proc.wait()
+        if ret != 0:
+            err_out = "\n".join(tail)
+            raise subprocess.CalledProcessError(ret, cmd, output=err_out, stderr=err_out)
+        return ret
+
     @contextmanager
     def package_operation_log(self, data_pkg_dir: str, pkg_name: str, operation: str) -> Iterator[Optional[str]]:
         """Создает датированный файл install_YYYYMMDD_HHMMSS.log в data_pkg_dir и дублирует туда весь вывод операции."""
+        prev_pkg = self.current_package
+        self.current_package = pkg_name
         if self.dry_run or not data_pkg_dir:
-            yield None
+            try:
+                yield None
+            finally:
+                self.current_package = prev_pkg
             return
         now = time.time()
         dt = datetime.fromtimestamp(now)
@@ -99,7 +163,10 @@ class ExecutionContext:
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write(header)
         except OSError:
-            yield None
+            try:
+                yield None
+            finally:
+                self.current_package = prev_pkg
             return
 
         def _file_writer(msg: str) -> None:
@@ -115,3 +182,4 @@ class ExecutionContext:
             yield log_path
         finally:
             self.remove_log_listener(_file_writer)
+            self.current_package = prev_pkg

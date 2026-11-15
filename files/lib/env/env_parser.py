@@ -32,6 +32,8 @@ class EnvParser:
                 if "(" not in right and ")" not in right:
                     notice = left.strip()
                     default_val = right.strip()
+                    if default_val.startswith("default="):
+                        default_val = default_val[len("default=") :].strip()
             notices.append(notice)
             return default_val
 
@@ -123,6 +125,7 @@ class EnvParser:
                         "value": current_val,
                         "default_value": default_val,
                         "has_prompt": has_prompt,
+                        "required_prompt": bool(has_prompt and default_val == ""),
                         "notice": notice or comment_str,
                         "comment": comment_str,
                     }

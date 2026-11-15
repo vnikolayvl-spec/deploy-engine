@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Модальное окно редактирования всех переменных окружения (.env) пакета в TUI.
+Использует компактную верстку строк и блокирует сохранение, если пуст обязательный промпт без дефолта.
 Сохраняет предустановки в локальную папку ./env/<pkg>.env, не изменяя репозиторий пакетов.
 """
 from typing import Dict, List
@@ -45,19 +46,44 @@ class EnvEditorModal(ModalScreen):
                     yield Label("В файле .env не обнаружено переменных для настройки.")
                 for idx, entry in enumerate(self.entries):
                     key = entry["key"]
+                    req = entry.get("required_prompt", False)
+                    has_p = entry.get("has_prompt", False)
                     notice = entry.get("notice") or ""
-                    badge = " [PROMPT]" if entry.get("has_prompt") else ""
-                    desc_text = f" — {notice}" if notice else ""
-                    yield Label(f"{key}{badge}{desc_text}", classes="env_field_label")
-                    yield Input(
-                        value=str(entry.get("value", "")),
-                        placeholder=str(entry.get("default_value", "")),
-                        id=f"env_input_{idx}",
-                        classes="env_field_input",
-                    )
+                    badge = " [❗ ОБЯЗАТЕЛЬНО]" if req else (" [PROMPT]" if has_p else "")
+                    desc_text = f" ({notice})" if notice else ""
+                    with Horizontal(classes="env_compact_row"):
+                        yield Label(
+                            f"{key}{badge}{desc_text}",
+                            classes="env_compact_label_req" if req else "env_compact_label",
+                        )
+                        yield Input(
+                            value=str(entry.get("value", "")),
+                            placeholder=str(entry.get("default_value") or notice or "Введите значение..."),
+                            id=f"env_input_{idx}",
+                            classes="env_compact_input",
+                        )
             with Horizontal(id="env_modal_buttons"):
                 yield Button("💾 Сохранить предустановку", variant="success", id="btn_env_save")
                 yield Button("Отмена (Esc)", variant="default", id="btn_env_cancel")
+
+    def on_mount(self) -> None:
+        self._validate_required_inputs()
+
+    def _validate_required_inputs(self) -> bool:
+        if not self.is_mounted:
+            return True
+        missing = False
+        for idx, entry in enumerate(self.entries):
+            if entry.get("required_prompt"):
+                inp = self.query_one(f"#env_input_{idx}", Input)
+                if not inp.value.strip():
+                    missing = True
+                    break
+        self.query_one("#btn_env_save", Button).disabled = missing
+        return not missing
+
+    def on_input_changed(self, _event: Input.Changed) -> None:
+        self._validate_required_inputs()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -66,6 +92,8 @@ class EnvEditorModal(ModalScreen):
         if event.button.id == "btn_env_cancel":
             self.dismiss(None)
         elif event.button.id == "btn_env_save":
+            if not self._validate_required_inputs():
+                return
             values: Dict[str, str] = {}
             for idx, entry in enumerate(self.entries):
                 inp = self.query_one(f"#env_input_{idx}", Input)

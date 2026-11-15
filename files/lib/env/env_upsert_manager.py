@@ -92,15 +92,29 @@ class EnvUpsertManager:
                     self.context.log(f"🔎 [DRY-RUN] ENV: Все ключи уже присутствуют в {dest_path}, изменений нет.")
             return True
 
+        approval_cb = getattr(self.context, "env_approval_callback", None)
+        approved_from_tui: Optional[Dict[str, str]] = None
+        if callable(approval_cb) and inferred_pkg:
+            approved_from_tui = approval_cb(inferred_pkg, src_path, dest_path)
+            if isinstance(approved_from_tui, dict):
+                preset_path = self.save_local_preset(inferred_pkg, src_path, approved_from_tui)
+                effective_src = preset_path
+                src_keys, src_lines = self.parser.parse_file(effective_src)
+
         if not os.path.exists(dest_dir):
             os.makedirs(dest_dir, mode=0o700, exist_ok=True)
             self.transaction_manager.record_created_dir(dest_dir)
 
-        if not os.path.exists(dest_path) or self.context.clean_env:
+        if not os.path.exists(dest_path) or self.context.clean_env or isinstance(approved_from_tui, dict):
             with open(effective_src, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            content = self._resolve_prompts(content)
+            content, prompted = self._resolve_prompts_with_flag(content)
+            if prompted and inferred_pkg and preset_path:
+                os.makedirs(os.path.dirname(preset_path), exist_ok=True)
+                with open(preset_path, "w", encoding="utf-8") as pf:
+                    pf.write(content)
+                os.chmod(preset_path, 0o600)
 
             if os.path.exists(dest_path):
                 backup_path = f"{dest_path}.de_bak"
@@ -166,18 +180,25 @@ class EnvUpsertManager:
         else:
             self.context.log(f"🔒 Каталог окружения сохранен: {env_dir} (для удаления используйте --purge)")
 
-    def _resolve_prompts(self, text: str) -> str:
+    def _resolve_prompts_with_flag(self, text: str) -> tuple[str, bool]:
         """
-        Разрешает оставшиеся макросы {{PROMPT:...}}.
-        Если все промпты уже заполнены через предустановку в ./env/, вопросы не задаются.
+        Разрешает макросы {{PROMPT:...}}.
+        Интерактивно опрашивает через /dev/tty только те промпты, у которых НЕТ значения по умолчанию.
         """
         pattern = re.compile(r"\{\{PROMPT:(.*?)\}\}")
         if not pattern.search(text):
-            return text
+            return text, False
 
-        is_interactive = sys.stdin.isatty() and not os.environ.get("DE_NONINTERACTIVE") and not self.context.non_interactive
+        is_interactive = (
+            sys.stdin.isatty()
+            and not os.environ.get("DE_NONINTERACTIVE")
+            and not self.context.non_interactive
+            and not getattr(self.context, "in_tui", False)
+        )
+        was_prompted = False
 
         def replace_match(match: re.Match) -> str:
+            nonlocal was_prompted
             inner = match.group(1).strip()
             default_val = ""
             notice = inner
@@ -187,23 +208,22 @@ class EnvUpsertManager:
                 if "(" not in right and ")" not in right:
                     notice = left.strip()
                     default_val = right.strip()
+                    if default_val.startswith("default="):
+                        default_val = default_val[len("default=") :].strip()
 
-            if is_interactive:
-                print(f"\n💬 [ПОДКАЗКА]: {notice}")
-                prompt_msg = (
-                    f"👉 Введите значение [{default_val}]: "
-                    if default_val
-                    else "👉 Введите значение (Enter для значения по умолчанию): "
-                )
+            # Запрашиваем интерактивно только если дефолтного значения нет
+            if is_interactive and default_val == "":
+                print(f"\n💬 [ОБЯЗАТЕЛЬНЫЙ ПАРАМЕТР]: {notice}")
                 try:
-                    sys.stdout.write(prompt_msg)
+                    sys.stdout.write("👉 Введите значение: ")
                     sys.stdout.flush()
                     with open("/dev/tty", "r", encoding="utf-8") as tty:
                         line = tty.readline()
                         if line == "":
                             raise KeyboardInterrupt()
                         user_input = line.strip()
-                    return user_input if user_input else default_val
+                    was_prompted = True
+                    return user_input
                 except KeyboardInterrupt:
                     raise
                 except Exception:
@@ -211,4 +231,8 @@ class EnvUpsertManager:
 
             return default_val
 
-        return pattern.sub(replace_match, text)
+        return pattern.sub(replace_match, text), was_prompted
+
+    def _resolve_prompts(self, text: str) -> str:
+        resolved, _ = self._resolve_prompts_with_flag(text)
+        return resolved

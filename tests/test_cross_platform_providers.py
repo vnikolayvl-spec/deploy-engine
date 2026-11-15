@@ -188,16 +188,23 @@ class TestCrossPlatformProviders(unittest.TestCase):
         self.assertIn("LOG_MODE=debug", installed_env_text)
         self.assertNotIn("{{PROMPT:", installed_env_text)
 
-        # 4. Проверка динамического переключения Sandbox/OS в Engine (для чекбокса и выпадающего списка TUI)
+        # 3b. В режиме TUI (in_tui=True, non_interactive=False) без пресета не должно быть чтения /dev/tty
+        dep_tpl = os.path.join(self.test_dir, "dep_pkg", "deploy.env")
+        os.makedirs(os.path.dirname(dep_tpl), exist_ok=True)
+        open(dep_tpl, "w", encoding="utf-8").write('DEFAULT_ADMIN_USER="{{PROMPT:Админ:default=admin}}"\nSSH_PORT="{{PROMPT:Порт:22}}"\n')
+        tui_env_mgr = EnvUpsertManager(ExecutionContext(in_tui=True, non_interactive=False), TransactionManager(), local_env_dir=local_env_dir)
+        dep_dest = os.path.join(self.test_dir, "etc_default", "de_dep-pkg", "dep-pkg.env")
+        tui_env_mgr.upsert_env_file(dep_tpl, dep_dest, pkg_name="dep-pkg")
+        dep_text = open(dep_dest, "r", encoding="utf-8").read()
+        self.assertIn('DEFAULT_ADMIN_USER="admin"', dep_text)
+        self.assertIn('SSH_PORT="22"', dep_text)
+
+        # 4. Проверка динамического переключения Sandbox/OS в Engine
         engine = Engine(ExecutionContext(sandbox_dir=os.path.join(self.test_dir, "sb_dyn")))
         engine.configure_environment(sandbox=True, sandbox_os="alpine")
-        self.assertTrue(engine.provider.is_sandbox)
-        self.assertEqual(engine.provider.distro_id, "alpine")
-        self.assertEqual(engine.provider.detect_package_manager(), "apk")
-
+        self.assertTrue(engine.provider.is_sandbox and engine.provider.distro_id == "alpine" and engine.provider.detect_package_manager() == "apk")
         engine.configure_environment(sandbox=True, sandbox_os="macos")
-        self.assertEqual(engine.provider.os_family, "macos")
-        self.assertTrue(engine.provider.uses_launchd_plist())
+        self.assertTrue(engine.provider.os_family == "macos" and engine.provider.uses_launchd_plist())
 
     def test_package_inspector_info_command_and_installed_paths(self):
         """Проверка работы инспектора пакета (info / --info): описание, категория и установленные пути."""

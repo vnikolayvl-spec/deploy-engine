@@ -107,21 +107,14 @@ class RemoteDeployer:
 
     def _build_cli_flags(self) -> str:
         """Формирует строку флагов CLI из ExecutionContext для удаленного вызова main.py."""
-        flags: List[str] = []
-        if self.context.dry_run:
-            flags.append("--dry-run")
-        if self.context.purge:
-            flags.append("--purge")
-        if self.context.clean_env:
-            flags.append("--clean-env")
-        if self.context.rescan:
-            flags.append("--rescan")
-        if self.context.json_output:
-            flags.append("--json")
-        if self.context.verbose:
-            flags.append("--verbose")
-        if getattr(self.context, "list_backups", False):
-            flags.append("--list")
+        flag_map = [
+            ("--dry-run", self.context.dry_run), ("--purge", self.context.purge),
+            ("--clean-env", self.context.clean_env), ("--rescan", self.context.rescan),
+            ("--json", self.context.json_output), ("--verbose", self.context.verbose),
+            ("--yes", bool(self.context.non_interactive or getattr(self.context, "in_tui", False))),
+            ("--list", bool(getattr(self.context, "list_backups", False))),
+        ]
+        flags = [f for f, cond in flag_map if cond]
         if getattr(self.context, "comment", ""):
             flags.append(f"--comment {shlex.quote(self.context.comment)}")
         if getattr(self.context, "backup_selector", None):

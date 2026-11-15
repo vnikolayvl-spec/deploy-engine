@@ -88,6 +88,7 @@ class DeployApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.engine.context.in_tui = True
         remote_host = getattr(self.engine.context, "remote", None)
         if remote_host:
             self.title = f"Deploy Engine [REMOTE: {remote_host}]"
@@ -108,7 +109,8 @@ class DeployApp(App):
         return None
 
     def _resolve_active_env_target(self) -> Optional[Tuple[str, str, str, str]]:
-        return self._find_package_env_unit(self.selected_filter_pkg) if self.selected_filter_pkg else None
+        target_pkg = self.selected_filter_pkg or self.cursor_pkg_key
+        return self._find_package_env_unit(target_pkg) if target_pkg else None
 
     def _update_env_button_state(self) -> None:
         self.query_one("#lbl_plan_title", Label).update(f"📋 Предпросмотр плана: {self.selected_filter_pkg or 'Все пакеты'}")
@@ -133,11 +135,21 @@ class DeployApp(App):
         return resolved
 
     def _sync_plan_tabs(self) -> None:
-        """Обновляет левый список: пакеты с действиями вверху списка, установленные без действий — ниже."""
+        """Обновляет левый список: пакеты с действиями и их зависимости вверху списка, установленные без действий — ниже."""
         opt_list, installed_keys = self.query_one("#plan_pkg_list", OptionList), self._resolve_installed_keys()
-        planned_keys = {k for k, v in self.actions.items() if v in ("install", "reinstall", "uninstall")} | set(self.backup_plans) | {k for k, v in self.restore_plans.items() if v}
+        explicit_planned = {k for k, v in self.actions.items() if v in ("install", "reinstall", "uninstall")} | set(self.backup_plans) | {k for k, v in self.restore_plans.items() if v}
+        dep_keys: Set[str] = set()
+        install_or_reinstall = [k for k, v in self.actions.items() if v in ("install", "reinstall") and self.engine.registry.has(k)]
+        if install_or_reinstall:
+            try:
+                for rk in self.engine.dep_graph.resolve_order(install_or_reinstall):
+                    if rk not in explicit_planned and self.engine.registry.has(rk):
+                        dep_keys.add(rk)
+            except Exception:
+                pass
+        planned_keys = explicit_planned | dep_keys
         all_candidates = sorted([k for k in (installed_keys | planned_keys) if not self.engine.registry.has(k) or self.engine.is_package_compatible(k)], key=lambda k: (0 if k in planned_keys else 1, k))
-        current_sig = tuple((k, k in installed_keys, self.engine.registry.has(k), self.actions.get(k, ""), k in self.backup_plans, self.restore_plans.get(k, "")) for k in all_candidates)
+        current_sig = tuple((k, k in installed_keys, k in dep_keys, self.engine.registry.has(k), self.actions.get(k, ""), k in self.backup_plans, self.restore_plans.get(k, "")) for k in all_candidates)
         if current_sig == self._last_tabs_sig: return
         self._last_tabs_sig = current_sig
         if self.selected_filter_pkg not in all_candidates: self.selected_filter_pkg = None
@@ -152,10 +164,10 @@ class DeployApp(App):
             act, has_mf = self.actions.get(pkg_key, "none"), self.engine.registry.has(pkg_key)
             is_ext = bool(has_mf and self.engine.registry.get(pkg_key).get("is_external_manifest"))
             default_badge = "[bold yellow]![/bold yellow]" if not has_mf else ("[bold cyan]✓[/bold cyan]" if is_ext else "[bold green]✓[/bold green]")
-            badges: List[str] = [icons[act]] if act in icons else ([default_badge] if pkg_key in installed_keys and pkg_key not in planned_keys else [])
+            badges: List[str] = [icons[act]] if act in icons else (["[bold cyan]+[/bold cyan]"] if pkg_key in dep_keys else ([default_badge] if pkg_key in installed_keys and pkg_key not in planned_keys else []))
             if pkg_key in self.backup_plans: badges.append("💾")
             if self.restore_plans.get(pkg_key): badges.append("🔄")
-            suffix = " [dim](манифест удален)[/dim]" if not has_mf else (" [dim](внешний)[/dim]" if is_ext else "")
+            suffix = " [dim](манифест удален)[/dim]" if not has_mf else (" [dim](зависимость)[/dim]" if pkg_key in dep_keys else (" [dim](внешний)[/dim]" if is_ext else ""))
             opt_list.add_option(Option(f"{''.join(badges) or default_badge} {pkg_key}{suffix}"))
             new_map.append(pkg_key)
             if pkg_key == self.selected_filter_pkg: selected_idx = idx
