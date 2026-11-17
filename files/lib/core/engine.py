@@ -107,7 +107,7 @@ class Engine:
     def resolve_dependencies(self, target: str) -> List[str]:
         if not self.registry.has(target):
             return []
-        order = self.dep_graph.resolve_order([target])
+        order, _ = self.dep_graph.resolve_install_order([target], is_installed_fn=self.state_repo.get_installed_package)
         for pkg_name in order:
             pkg = self.registry.get(pkg_name)
             if pkg["name"] not in self.active_packages:
@@ -130,16 +130,15 @@ class Engine:
             self.context.log(f"❗ Ошибка при откате: {rb_err}")
 
     def install_packages(self, targets: List[str]) -> bool:
-        """Транзакционная установка пакетов с проверкой совместимости ОС и автоматическим откатом."""
+        """Транзакционная установка пакетов с пропуском уже установленных зависимостей и автоматическим откатом."""
         valid_targets = [t for t in (targets or []) if t and str(t).strip() and self.registry.has(str(t).strip())]
-        if not valid_targets:
-            return False
-        ordered_packages = self.dep_graph.resolve_order(valid_targets)
+        if not valid_targets: return False
+        ordered_packages, skipped_deps = self.dep_graph.resolve_install_order(valid_targets, is_installed_fn=self.state_repo.get_installed_package)
+        if skipped_deps: self.context.log(f"⏭ Зависимости уже установлены (пропуск): {', '.join(skipped_deps)}")
         for pkg_name in ordered_packages:
             pkg = self.registry.get(pkg_name)
             if not self.is_package_compatible(pkg):
-                supported = ", ".join(pkg.get("platforms") or [])
-                raise DeployEngineError(f"Пакет '{pkg['name']}' не поддерживает текущую систему ({self.provider.distro_id}). Поддерживаемые платформы: {supported}")
+                raise DeployEngineError(f"Пакет '{pkg['name']}' не поддерживает текущую систему ({self.provider.distro_id}). Поддерживаемые платформы: {', '.join(pkg.get('platforms') or [])}")
         self.context.log(f"📋 Порядок установки пакетов: {' -> '.join(ordered_packages)}")
         all_sys_pkgs: List[str] = []
         for pkg_name in ordered_packages:

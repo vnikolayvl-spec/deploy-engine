@@ -142,7 +142,8 @@ class DeployApp(App):
         install_or_reinstall = [k for k, v in self.actions.items() if v in ("install", "reinstall") and self.engine.registry.has(k)]
         if install_or_reinstall:
             try:
-                for rk in self.engine.dep_graph.resolve_order(install_or_reinstall):
+                resolved_deps, _ = self.engine.dep_graph.resolve_install_order(install_or_reinstall, is_installed_fn=self.engine.state_repo.get_installed_package)
+                for rk in resolved_deps:
                     if rk not in explicit_planned and self.engine.registry.has(rk):
                         dep_keys.add(rk)
             except Exception:
