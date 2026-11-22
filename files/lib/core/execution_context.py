@@ -48,10 +48,12 @@ class ExecutionContext:
         self.list_backups = list_backups
         self.in_tui = in_tui
         self.current_package: Optional[str] = None
+        self.current_phase: str = ""
         self.env_approval_callback: Optional[Callable[[str, str, str], Optional[dict]]] = None
         self._log_listeners: List[Callable[[str], None]] = []
         self._pkg_log_listeners: List[Callable[[Optional[str], str], None]] = []
         self._pkg_status_listeners: List[Callable[[str, str], None]] = []
+        self._phase_listeners: List[Callable[[str], None]] = []
 
     def add_log_listener(self, callback: Callable[[str], None]) -> None:
         if callback not in self._log_listeners:
@@ -76,6 +78,23 @@ class ExecutionContext:
     def remove_pkg_status_listener(self, callback: Callable[[str, str], None]) -> None:
         if callback in self._pkg_status_listeners:
             self._pkg_status_listeners.remove(callback)
+
+    def add_phase_listener(self, callback: Callable[[str], None]) -> None:
+        if callback not in self._phase_listeners:
+            self._phase_listeners.append(callback)
+
+    def remove_phase_listener(self, callback: Callable[[str], None]) -> None:
+        if callback in self._phase_listeners:
+            self._phase_listeners.remove(callback)
+
+    def set_phase(self, phase: str) -> None:
+        """Обновляет текущую фазу выполнения и уведомляет слушателей (например, индикатор TUI)."""
+        self.current_phase = str(phase or "").strip()
+        for pcb in list(self._phase_listeners):
+            try:
+                pcb(self.current_phase)
+            except Exception:
+                pass
 
     def emit_pkg_status(self, pkg_name: str, status: str) -> None:
         """Уведомляет слушателей об изменении статуса пакета ('running', 'done', 'error')."""
@@ -157,6 +176,7 @@ class ExecutionContext:
         """Создает датированный файл install_YYYYMMDD_HHMMSS.log в data_pkg_dir и уведомляет слушателей о статусе пакета."""
         prev_pkg = self.current_package
         self.current_package = pkg_name
+        self.set_phase(f"Выполнение ({operation}): {pkg_name}...")
         self.emit_pkg_status(pkg_name, "running")
         if self.dry_run or not data_pkg_dir:
             try:

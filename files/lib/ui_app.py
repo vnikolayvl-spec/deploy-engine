@@ -80,7 +80,7 @@ class DeployApp(App):
                     yield Checkbox("🔒 Sandbox (песочница)", value=is_sb, id="chk_sandbox", disabled=bool(remote_host))
                     yield Label("Система песочницы:", id="lbl_sandbox_os")
                     yield Select(self.SANDBOX_OS_OPTIONS, value=initial_os, allow_blank=False, id="sel_sandbox_os", disabled=bool(remote_host))
-                    yield Label("📁 Предустановки .env:\ndeploy-engine/env/", id="lbl_env_dir_hint")
+                    yield Label(f"📁 Предустановки .env:\n{self.engine.env_manager.local_env_dir}", id="lbl_env_dir_hint")
 
                 with Vertical(id="action_buttons_box"):
                     yield Button("Выполнить план", variant="success", id="btn_run")
@@ -241,10 +241,14 @@ class DeployApp(App):
         self.render_live_preview()
 
     def _launch_env_modal(self, pkg_name: str, unit_name: str, src_path: str, dest_path: str) -> None:
-        def _on_modal_closed(saved_preset_path: Optional[str]) -> None:
-            if saved_preset_path:
-                self.query_one("#packages_tree", InfrastructureTree).mark_env_configured(pkg_name)
-                self.render_live_preview()
+        def _on_modal_closed(result: Any) -> None:
+            if not result: return
+            self.query_one("#packages_tree", InfrastructureTree).mark_env_configured(pkg_name)
+            self.render_live_preview()
+            if isinstance(result, dict):
+                if result.get("warning"): self.notify(str(result["warning"]), severity="warning", timeout=6.0)
+                elif result.get("applied_system"): self.notify(f"Пресет сохранен и применен в системный .env ({pkg_name})", severity="information", timeout=4.0)
+                else: self.notify(f"Пресет .env сохранен во внутреннее хранилище ({pkg_name})", severity="information", timeout=3.0)
         self.push_screen(EnvEditorModal(self.engine, pkg_name, unit_name, src_path, dest_path), _on_modal_closed)
 
     def open_env_editor(self, env_node: TreeNode) -> None:
@@ -261,39 +265,27 @@ class DeployApp(App):
         if target: self._launch_env_modal(*target)
 
     def on_key(self, event) -> None:
-        if isinstance(self.focused, Input):
-            return
+        if isinstance(self.focused, Input): return
         norm_key = normalize_hotkey(getattr(event, "key", "") or "", getattr(event, "character", "") or "")
         if norm_key == "q":
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             now = time.monotonic()
-            if now - self._last_q_time <= 1.0:
-                self.exit()
+            if now - self._last_q_time <= 1.0: self.exit()
             else:
                 self._last_q_time = now
                 self.notify("Нажмите q (й) ещё раз в течение 1 сек для выхода", severity="warning", timeout=1.0)
-        else:
-            dispatch_localized_binding(self, event)
+        else: dispatch_localized_binding(self, event)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn_exit":
-            self.exit()
-        elif event.button.id == "btn_edit_pkg_env":
-            self.action_edit_current_env()
+        if event.button.id == "btn_exit": self.exit()
+        elif event.button.id == "btn_edit_pkg_env": self.action_edit_current_env()
         elif event.button.id == "btn_run":
-            active_targets: Dict[str, Any] = {
-                k: v for k, v in self.actions.items() if v != "none" and self.engine.registry.has(k) and self.engine.is_package_compatible(k)
-            }
+            active_targets: Dict[str, Any] = {k: v for k, v in self.actions.items() if v != "none" and self.engine.registry.has(k) and self.engine.is_package_compatible(k)}
             backups = sorted(k for k in self.backup_plans if self.engine.registry.has(k) and self.engine.is_package_compatible(k))
             restores = {k: v for k, v in self.restore_plans.items() if v and self.engine.registry.has(k) and self.engine.is_package_compatible(k)}
             if not active_targets and not backups and not restores:
-                self.query_one("#preview_log", PlanPreviewLog).write(
-                    "[bold red]❌ План пуст! Выберите пакеты, пункт бэкапа или архив восстановления клавишей ПРОБЕЛ.[/bold red]"
-                )
+                self.query_one("#preview_log", PlanPreviewLog).write("[bold red]❌ План пуст! Выберите пакеты, пункт бэкапа или архив восстановления клавишей ПРОБЕЛ.[/bold red]")
                 return
-            if backups:
-                active_targets["__backup__"] = backups
-            if restores:
-                active_targets["__restore__"] = restores
+            if backups: active_targets["__backup__"] = backups
+            if restores: active_targets["__restore__"] = restores
             self._run_plan_in_modal(active_targets, clear_current_plan=True)

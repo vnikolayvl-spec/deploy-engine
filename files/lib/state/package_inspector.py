@@ -161,7 +161,9 @@ class PackageInspector:
         """Форматирует детальную карточку пакета с описанием и всеми системными путями."""
         info = self.get_package_info(pkg_query)
         if not info:
-            return f"❌ Пакет '{pkg_query}' не найден среди установленных пакетов и в реестре."
+            hints = self.engine.registry.suggest_similar(pkg_query) if (self.engine and hasattr(self.engine.registry, "suggest_similar")) else []
+            hint_str = f"\n💡 Возможно, вы имели в виду: {', '.join(hints)}" if hints else ""
+            return f"❗ Предупреждение: пакет '{pkg_query}' не найден среди установленных пакетов и в реестре.{hint_str}"
 
         if info["installed"] and not info["manifest_available"]:
             status_str = "❗ УСТАНОВЛЕН (исходный манифест удален — доступны только служба и логи)"

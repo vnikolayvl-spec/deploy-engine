@@ -12,14 +12,16 @@ import sys
 from typing import List, Optional, Tuple
 
 from lib.config import DEFAULT_REMOTE_ENGINE_DIR
+from lib.core.completion_provider import CompletionProvider
 from lib.core.deploy_engine_error import DeployEngineError
 from lib.core.engine import Engine
 from lib.core.execution_context import ExecutionContext
+from lib.env.env_config_editor import EnvConfigEditor
 from lib.remote.remote_deployer import RemoteDeployer
 from lib.state.package_inspector import PackageInspector
 from lib.utils import bootstrap_gui, check_root
 
-VALID_ACTIONS = {"install", "uninstall", "reinstall", "backup", "restore", "list", "info", "scan", "tui", "help"}
+VALID_ACTIONS = {"install", "uninstall", "reinstall", "backup", "restore", "list", "info", "config", "completion", "scan", "tui", "help"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,9 +35,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    parser.add_argument("pos_args", nargs="*", help="Команда (install|uninstall|reinstall|backup|restore|list|info|scan|tui) и/или цели/путь к пакетам")
+    parser.add_argument("pos_args", nargs="*", help="Команда (install|uninstall|reinstall|backup|restore|list|info|config|scan|tui) и/или цели/путь к пакетам")
     parser.add_argument("--tui", "-u", dest="force_tui", action="store_true", help="Принудительно открыть интерактивный TUI-интерфейс")
     parser.add_argument("--info", "-i", dest="info_flag", nargs="?", const="__FLAG_ONLY__", default=None, help="Показать описание пакета, статус и пути установки")
+    parser.add_argument("--preset", dest="preset", action="store_true", help="Открыть файл предустановки из внутреннего хранилища (для команды config)")
     parser.add_argument("--comment", "-c", dest="comment", default="", help="Комментарий к создаваемому бэкапу (для команды backup)")
     parser.add_argument("--backup", "-b", dest="backup_selector", default=None, help="Номер (1, 2...), метка времени или имя архива для restore")
     parser.add_argument("--list", "-l", dest="list_backups", action="store_true", help="Показать список доступных бэкапов (для backup и restore)")
@@ -131,7 +134,7 @@ def _load_engine_sources(engine: Engine, args: argparse.Namespace, action: str, 
         if not os.path.isfile(args.manifest):
             raise DeployEngineError(f"Источник манифеста '{args.manifest}' не найден.")
         engine.load_manifest_recursive(args.manifest)
-        if not targets and action in ("install", "uninstall", "reinstall", "backup", "restore", "info"):
+        if not targets and action in ("install", "uninstall", "reinstall", "backup", "restore", "info", "config"):
             targets = engine.infer_targets_from_manifest(args.manifest)
         return targets, None
 
@@ -178,17 +181,11 @@ def run_tui(args: argparse.Namespace, context: ExecutionContext) -> None:
             to_reinstall = [k for k, v in actions_plan.items() if v == "reinstall" and engine.registry.has(k)]
             to_install = [k for k, v in actions_plan.items() if v == "install" and engine.registry.has(k)]
 
-            if to_backup:
-                engine.backup_packages(to_backup, comment=args.comment)
-            for pkg, arch_selector in to_restore.items():
-                engine.restore_packages([pkg], selector=arch_selector)
-            for pkg in to_uninstall:
-                engine.uninstall_package(pkg)
-            for pkg in to_reinstall:
-                print(f"\n🔄 TUI: Запуск переустановки пакета: {pkg.upper()}")
-                engine.reinstall_package(pkg)
-            if to_install:
-                engine.install_packages(to_install)
+            if to_backup: engine.backup_packages(to_backup, comment=args.comment)
+            for pkg, arch_selector in to_restore.items(): engine.restore_packages([pkg], selector=arch_selector)
+            for pkg in to_uninstall: engine.uninstall_package(pkg)
+            for pkg in to_reinstall: engine.reinstall_package(pkg)
+            if to_install: engine.install_packages(to_install)
 
 
 def run_cli(action: str, targets: List[str], args: argparse.Namespace, context: ExecutionContext, parser: argparse.ArgumentParser) -> None:
@@ -199,6 +196,12 @@ def run_cli(action: str, targets: List[str], args: argparse.Namespace, context: 
 
     engine = Engine(context)
     targets, scanned_count = _load_engine_sources(engine, args, action, targets)
+
+    if action == "completion":
+        mode = targets[0] if targets else "packages"
+        out = CompletionProvider(engine).render(mode)
+        if out: print(out)
+        return
 
     if action == "scan" and not args.remote:
         src_note = f" из '{args.packages_dir}'" if args.packages_dir else ""
@@ -220,10 +223,15 @@ def run_cli(action: str, targets: List[str], args: argparse.Namespace, context: 
         return
 
     if action == "info":
-        if not targets:
-            raise DeployEngineError("Укажите имя пакета для просмотра информации (например: deploy-engine info <пакет>).")
+        if not targets: raise DeployEngineError("Укажите имя пакета для просмотра информации (например: deploy-engine info <пакет>).")
         inspector = PackageInspector(state_repo=engine.state_repo, engine=engine)
         print(inspector.info_to_json(targets) if args.json_output else "\n\n".join(inspector.format_package_info(t) for t in targets))
+        return
+
+    if action == "config":
+        if not targets: raise DeployEngineError("Укажите имя пакета для редактирования .env (например: deploy-engine config <пакет> [--preset]).")
+        editor = EnvConfigEditor(engine)
+        for target in targets: editor.open_config(target, preset=bool(args.preset))
         return
 
     if action in ("backup", "restore") and args.list_backups:
@@ -234,29 +242,21 @@ def run_cli(action: str, targets: List[str], args: argparse.Namespace, context: 
             print(engine.backup_manager.format_backups_list(targets or ["all"]))
         return
 
-    if not targets:
-        raise DeployEngineError(f"Не указано имя пакета (или 'all') для операции '{action}'.")
+    if not targets: raise DeployEngineError(f"Не указано имя пакета (или 'all') для операции '{action}'.")
+    if not args.dry_run and action != "backup" and engine.provider.requires_root(): check_root()
 
-    if not args.dry_run and action != "backup" and engine.provider.requires_root():
-        check_root()
-
-    if action == "install":
-        engine.install_packages(targets)
+    if action == "install": engine.install_packages(targets)
     elif action == "uninstall":
-        for target in targets:
-            engine.uninstall_package(target)
+        for target in targets: engine.uninstall_package(target)
     elif action == "reinstall":
-        for target in targets:
-            engine.reinstall_package(target)
+        for target in targets: engine.reinstall_package(target)
     elif action == "backup":
         res = engine.backup_packages(targets, comment=args.comment)
-        if args.json_output:
-            print(json.dumps(res, indent=2, ensure_ascii=False))
+        if args.json_output: print(json.dumps(res, indent=2, ensure_ascii=False))
     elif action == "restore":
         r_targets, selector = _extract_restore_selector(engine, targets, args.backup_selector)
         res = engine.restore_packages(r_targets, selector=selector)
-        if args.json_output:
-            print(json.dumps(res, indent=2, ensure_ascii=False))
+        if args.json_output: print(json.dumps(res, indent=2, ensure_ascii=False))
 
 
 def main() -> None:

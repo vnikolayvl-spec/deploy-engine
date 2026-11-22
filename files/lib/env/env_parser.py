@@ -7,9 +7,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 class EnvParser:
-    """Парсер .env файлов с сохранением структуры строк, комментариев и разбором {{PROMPT:...}}."""
+    """Парсер .env файлов с сохранением структуры строк, комментариев, #AUTO# и разбором {{PROMPT:...}}."""
 
     PROMPT_RE = re.compile(r"\{\{PROMPT:(.*?)\}\}")
+    AUTO_MARKER = "#AUTO#"
+
+    @classmethod
+    def is_auto_value(cls, value: Optional[str]) -> bool:
+        """Возвращает True, если значение является маркером автоопределения #AUTO#."""
+        return (value or "").strip() == cls.AUTO_MARKER
 
     @classmethod
     def extract_prompt_info(cls, raw_val: str) -> Tuple[bool, str, str]:
@@ -94,7 +100,13 @@ class EnvParser:
         _, lines = self.parse_file(template_path)
         overrides: Dict[str, str] = {}
         for path in override_paths or []:
-            if path and os.path.isfile(path):
+            if not path:
+                continue
+            try:
+                is_f = os.path.isfile(path)
+            except PermissionError:
+                continue
+            if is_f:
                 kv, _ = self.parse_file(path)
                 for k, v in kv.items():
                     has_p, _, _ = self.extract_prompt_info(v)
@@ -119,6 +131,7 @@ class EnvParser:
                 pending_comments.clear()
 
                 current_val = overrides.get(k, default_val if has_prompt else raw_val)
+                is_auto = self.is_auto_value(current_val) or self.is_auto_value(default_val if has_prompt else raw_val)
                 entries.append(
                     {
                         "key": k,
@@ -126,6 +139,7 @@ class EnvParser:
                         "default_value": default_val,
                         "has_prompt": has_prompt,
                         "required_prompt": bool(has_prompt and default_val == ""),
+                        "is_auto": is_auto,
                         "notice": notice or comment_str,
                         "comment": comment_str,
                     }
@@ -149,18 +163,22 @@ class EnvParser:
                     val = values[k]
                     raw_line = item["raw"]
                     eq_rhs = raw_line.split("=", 1)[1].strip() if "=" in raw_line else ""
-                    if (eq_rhs.startswith('"') and eq_rhs.endswith('"')) or (" " in val and not val.startswith('"')):
+                    if (
+                        (eq_rhs.startswith('"') and eq_rhs.endswith('"'))
+                        or (" " in val and not val.startswith('"'))
+                        or self.is_auto_value(val)
+                    ):
                         out_lines.append(f'{k}="{val}"')
                     else:
                         out_lines.append(f"{k}={val}")
                 else:
                     _, _, def_val = self.extract_prompt_info(item["value"])
-                    out_lines.append(f"{k}={def_val}")
+                    out_lines.append(f'{k}="{def_val}"' if self.is_auto_value(def_val) else f"{k}={def_val}")
             else:
                 out_lines.append(item["raw"])
 
         for k, val in values.items():
             if k not in seen_keys:
-                out_lines.append(f"{k}={val}")
+                out_lines.append(f'{k}="{val}"' if (self.is_auto_value(val) or " " in val) else f"{k}={val}")
 
         return "\n".join(out_lines) + "\n"

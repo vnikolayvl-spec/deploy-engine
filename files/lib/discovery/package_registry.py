@@ -2,6 +2,7 @@
 Package registry storing discovered packages, category/subcategory metadata, and units.
 Categories use strictly category.json (optional if only folder name is needed); packages use manifest.json.
 """
+import difflib
 import os
 from typing import Any, Dict, List, Optional
 from lib.discovery.category_manifest_parser import CategoryManifestParser
@@ -122,6 +123,19 @@ class PackageRegistry:
 
     def list_all(self) -> Dict[str, Dict[str, Any]]:
         return dict(self.packages)
+
+    def suggest_similar(self, query: str, limit: int = 3) -> List[str]:
+        """Подбирает похожие имена пакетов из реестра для подсказки при опечатке."""
+        clean = (query or "").strip()
+        if not clean:
+            return []
+        candidates: List[str] = []
+        for ns, pkg in self.packages.items():
+            name = pkg.get("name") or ns
+            for cand in (name, ns, *(pkg.get("aliases") or [])):
+                if cand and cand not in candidates:
+                    candidates.append(cand)
+        return difflib.get_close_matches(clean, candidates, n=limit, cutoff=0.5)
 
     def load_from_cache(self) -> bool:
         """Загружает базу пакетов и категорий из кэша packages.json (с проверкой актуальности mtime)."""

@@ -52,30 +52,31 @@ class FileInstaller:
             os.remove(backup_path)
 
     @staticmethod
+    def clear_macos_quarantine(target_path: str, recursive: bool = False) -> None:
+        """Централизованно снимает com.apple.quarantine на macOS, избавляя пакеты от дублирования xattr в хуках."""
+        if sys.platform != "darwin" or not target_path or not os.path.exists(target_path) or not shutil.which("xattr"):
+            return
+        flag = "-rd" if (recursive or os.path.isdir(target_path)) else "-d"
+        subprocess.run(["xattr", flag, "com.apple.quarantine", target_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+    @staticmethod
     def _normalize_tree_permissions(dest_dir: str) -> None:
-        """Авто-права внутри files/: директориям 0755 (+rX), main.py и *.sh 0755 (+x), на macOS xattr -rc."""
+        """Авто-права внутри files/: директориям 0755 (+rX), main.py и *.sh 0755 (+x), на macOS снятие карантина."""
         parent_pkg_dir = os.path.dirname(dest_dir)
         if os.path.basename(parent_pkg_dir).startswith("de_") and os.path.isdir(parent_pkg_dir):
-            try:
-                os.chmod(parent_pkg_dir, 0o755)
-            except OSError:
-                pass
+            try: os.chmod(parent_pkg_dir, 0o755)
+            except OSError: pass
         for root, dirs, files in os.walk(dest_dir):
             for dp in [root] + [os.path.join(root, d) for d in dirs if not os.path.islink(os.path.join(root, d))]:
-                try:
-                    os.chmod(dp, 0o755)
-                except OSError:
-                    pass
+                try: os.chmod(dp, 0o755)
+                except OSError: pass
             for fname in files:
                 fp = os.path.join(root, fname)
                 if not os.path.islink(fp):
-                    try:
-                        os.chmod(fp, 0o755 if (fname == "main.py" or fname.endswith(".sh")) else (stat.S_IMODE(os.stat(fp).st_mode) | 0o644))
-                    except OSError:
-                        pass
-        if sys.platform == "darwin" and shutil.which("xattr"):
-            target_xattr = parent_pkg_dir if os.path.basename(parent_pkg_dir).startswith("de_") else dest_dir
-            subprocess.run(["xattr", "-rc", target_xattr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    try: os.chmod(fp, 0o755 if (fname == "main.py" or fname.endswith(".sh")) else (stat.S_IMODE(os.stat(fp).st_mode) | 0o644))
+                    except OSError: pass
+        target_xattr = parent_pkg_dir if os.path.basename(parent_pkg_dir).startswith("de_") else dest_dir
+        FileInstaller.clear_macos_quarantine(target_xattr, recursive=True)
 
     def install_dir_unit(self, dest_path: str, mode: int = 0o755) -> bool:
         """Создает директорию юнита type='dir' (или из секции dirs) с регистрацией в транзакции."""
@@ -201,6 +202,8 @@ class FileInstaller:
 
             effective_mode = 0o755 if (os.path.basename(dest_path) == "main.py" or dest_path.endswith(".sh")) else mode
             os.chmod(dest_path, effective_mode)
+            if unit_type == "script" or (effective_mode & 0o111):
+                self.clear_macos_quarantine(dest_path, recursive=False)
             self.context.log_verbose(f"Установлен файл: {dest_path} ({oct(effective_mode)})")
             return True
         except Exception as err:

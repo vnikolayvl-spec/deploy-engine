@@ -12,6 +12,8 @@ from lib.dependencies.node_pkg_manager import NodePackageManager
 from lib.dependencies.python_pkg_manager import PythonPackageManager
 from lib.dependencies.system_pkg_manager import SystemPackageManager
 from lib.discovery.package_registry import PackageRegistry
+from lib.discovery.target_validator import TargetValidator
+from lib.env.env_confirmation_gate import EnvConfirmationGate
 from lib.env.env_upsert_manager import EnvUpsertManager
 from lib.installer.file_installer import FileInstaller
 from lib.installer.transaction_manager import TransactionManager
@@ -37,6 +39,7 @@ class Engine:
         self.file_installer, self.env_manager, self.hook_executor = FileInstaller(self.context, self.txn, provider=self.provider), EnvUpsertManager(self.context, self.txn, provider=self.provider), HookExecutor(self.context, provider=self.provider)
         self.state_repo = StateRepository(context=self.context, provider=self.provider, registry=self.registry, path_resolver=self.path_resolver)
         self.backup_manager = BackupManager(context=self.context, provider=self.provider, registry=self.registry, path_resolver=self.path_resolver, state_repo=self.state_repo)
+        self.target_validator = TargetValidator(self.registry, self.context)
         self.files_to_deploy, self.sys_packages_to_install, self.active_packages, self.deployed_files_map = [], [], [], {}
 
     def configure_environment(self, sandbox: bool = False, sandbox_os: Optional[str] = None) -> None:
@@ -84,8 +87,7 @@ class Engine:
         return self.registry.scan_directories(valid_roots, force_rescan=force_rescan)
 
     def load_manifest_recursive(self, manifest_or_dir: str) -> int:
-        if os.path.isdir(manifest_or_dir):
-            return self.discover_packages(search_roots=[manifest_or_dir], force_rescan=True)
+        if os.path.isdir(manifest_or_dir): return self.discover_packages(search_roots=[manifest_or_dir], force_rescan=True)
         self.registry.load_legacy_manifest(manifest_or_dir)
         return len(self.registry.packages)
 
@@ -105,8 +107,7 @@ class Engine:
         for lst in (self.files_to_deploy, self.sys_packages_to_install, self.active_packages, self.deployed_files_map): lst.clear()
 
     def resolve_dependencies(self, target: str) -> List[str]:
-        if not self.registry.has(target):
-            return []
+        if not self.registry.has(target): return []
         order, _ = self.dep_graph.resolve_install_order([target], is_installed_fn=self.state_repo.get_installed_package)
         for pkg_name in order:
             pkg = self.registry.get(pkg_name)
@@ -130,8 +131,8 @@ class Engine:
             self.context.log(f"❗ Ошибка при откате: {rb_err}")
 
     def install_packages(self, targets: List[str]) -> bool:
-        """Транзакционная установка пакетов с пропуском уже установленных зависимостей и автоматическим откатом."""
-        valid_targets = [t for t in (targets or []) if t and str(t).strip() and self.registry.has(str(t).strip())]
+        """Транзакционная установка пакетов с предупреждением о ненайденных, пропуском установленных зависимостей и откатом."""
+        valid_targets = self.target_validator.filter_existing(targets, op_label="установки")
         if not valid_targets: return False
         ordered_packages, skipped_deps = self.dep_graph.resolve_install_order(valid_targets, is_installed_fn=self.state_repo.get_installed_package)
         if skipped_deps: self.context.log(f"⏭ Зависимости уже установлены (пропуск): {', '.join(skipped_deps)}")
@@ -140,14 +141,14 @@ class Engine:
             if not self.is_package_compatible(pkg):
                 raise DeployEngineError(f"Пакет '{pkg['name']}' не поддерживает текущую систему ({self.provider.distro_id}). Поддерживаемые платформы: {', '.join(pkg.get('platforms') or [])}")
         self.context.log(f"📋 Порядок установки пакетов: {' -> '.join(ordered_packages)}")
+        if not EnvConfirmationGate.confirm_in_cli(self, ordered_packages):
+            return False
         all_sys_pkgs: List[str] = []
         for pkg_name in ordered_packages:
             all_sys_pkgs.extend(self.sys_manager.resolve_for_platform(self.registry.get(pkg_name).get("sys_packages", [])))
-        if all_sys_pkgs:
-            self.sys_manager.install_packages(all_sys_pkgs)
+        if all_sys_pkgs: self.sys_manager.install_packages(all_sys_pkgs)
         try:
-            for pkg_name in ordered_packages:
-                self._install_single_package(pkg_name)
+            for pkg_name in ordered_packages: self._install_single_package(pkg_name)
             self.txn.commit()
             self.context.log("🎉 Все пакеты успешно установлены!")
             return True
@@ -221,8 +222,7 @@ class Engine:
 
     def install_files(self) -> None:
         pkgs_in_queue = list(dict.fromkeys([f.split(":", 1)[0] for f in self.files_to_deploy if ":" in f])) or list(self.active_packages)
-        if pkgs_in_queue:
-            self.install_packages(pkgs_in_queue)
+        if pkgs_in_queue: self.install_packages(pkgs_in_queue)
 
     def _stop_package_services(self, canonical_name: str, files_to_remove: List[str], base_dir: str) -> bool:
         stop_cmds = [
@@ -253,7 +253,7 @@ class Engine:
 
         files_to_remove = list(dict.fromkeys([str(f).strip() for f in raw_files if f and str(f).strip()]))
         if not state_entry and not pkg_info and not files_to_remove:
-            self.context.log(f"\n🧹 Удаление пакета: {canonical_name}\n❗ Пакет '{canonical_name}' не найден в установленных и список файлов на удаление пуст.")
+            self.context.log(f"\n🧹 Удаление пакета: {canonical_name}\n{self.target_validator.format_missing_warning(canonical_name)}")
             return False
 
         data_pkg_dir = os.path.join(paths["state_dir"], f"{DATA_PREFIX}{canonical_name}")
@@ -281,6 +281,7 @@ class Engine:
         return True
 
     def reinstall_package(self, pkg_name: str) -> bool:
+        if not self.target_validator.filter_existing([pkg_name], op_label="переустановки"): return False
         self.context.log(f"\n🔄 Переустановка пакета: {pkg_name}")
         self.uninstall_package(pkg_name)
         self._current_op = "reinstall"

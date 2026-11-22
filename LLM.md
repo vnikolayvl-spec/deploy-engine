@@ -1,4 +1,4 @@
-# 🤖 Deploy Engine (версия 9.0.0) — Техническая спецификация для LLM
+# 🤖 Deploy Engine (версия 9.1.0) — Техническая спецификация для LLM
 
 Данный документ описывает архитектуру, модульную структуру, правила разработки, ключи CLI и переменные окружения `deploy-engine` для языковых моделей и разработчиков.
 
@@ -25,7 +25,7 @@
 deploy-engine/
 ├── manifest.json              # Манифест для самоустановки движка в /opt/de_deploy-engine
 ├── deploy.env                 # Шаблон системной конфигурации (/etc/default/de_deploy-engine/deploy-engine.env)
-├── VERSION.txt                # Номер версии (9)
+├── VERSION.txt                # Номер версии (9.1.0)
 ├── COMMIT.txt                 # Описание текущего релиза
 ├── CHANGELOG.txt              # История изменений по версиям
 ├── README.md                  # Пользовательская документация с описанием всех ключей и ENV
@@ -44,7 +44,8 @@ deploy-engine/
         ├── utils.py           # Проверка прав root, авторазвертывание .venv для Textual и маппинг хоткеев
         ├── core/
         │   ├── engine.py                    # Главный фасад оркестратора (Engine)
-        │   ├── execution_context.py         # Контекст выполнения, потоковый запуск процессов и уведомления о статусе пакета
+        │   ├── execution_context.py         # Контекст выполнения, потоковый запуск процессов, статусы пакетов и фазы активности
+        │   ├── completion_provider.py       # Генератор подсказок автодополнения (commands|packages|installed) для Zsh/Bash
         │   ├── deploy_engine_error.py       # Базовое исключение DeployEngineError
         │   ├── manifest_validation_error.py # Ошибка валидации манифеста
         │   ├── name_collision_error.py      # Ошибка коллизии коротких имен пакетов
@@ -56,7 +57,8 @@ deploy-engine/
         │   ├── manifest_parser.py           # Парсер и нормализатор manifest.json
         │   ├── name_collision_resolver.py   # Разрешение имен, пространств имен и алиасов по имени папки
         │   ├── package_cache_manager.py     # Кэширование реестра в packages.json с TTL 60 минут
-        │   └── package_registry.py          # Центральный реестр пакетов и категорий
+        │   ├── package_registry.py          # Центральный реестр пакетов, категорий и подсказок похожих имен (suggest_similar)
+        │   └── target_validator.py          # Валидация целей и мягкие предупреждения о ненайденных пакетах
         ├── dependencies/
         │   ├── dependency_graph.py          # Топологическая сортировка зависимостей и фильтрация установленных (resolve_install_order)
         │   ├── system_pkg_manager.py        # Пакетная установка системных зависимостей через провайдер ОС
@@ -64,8 +66,8 @@ deploy-engine/
         │   └── node_pkg_manager.py          # Установка npm зависимостей
         ├── providers/
         │   ├── base_provider.py             # Абстрактный провайдер окружения ОС
-        │   ├── linux_provider.py            # Провайдер Linux (systemd + apt/dnf/yum/apk/pacman с кэш-TTL 60 мин)
-        │   ├── macos_provider.py            # Провайдер macOS (launchd .plist + brew/port)
+        │   ├── linux_provider.py            # Провайдер Linux (systemd + apt/dnf/yum/apk/pacman с кэш-TTL 60 мин и фазами TUI)
+        │   ├── macos_provider.py            # Провайдер macOS (launchd .plist + brew/port + root/user пути)
         │   ├── sandbox_provider.py          # Провайдер локальной песочницы (--sandbox)
         │   ├── provider_factory.py          # Фабрика провайдеров окружения
         │   └── systemd_to_plist_converter.py# Конвертер .service + .timer + .env -> launchd XML .plist
@@ -73,27 +75,31 @@ deploy-engine/
         │   ├── unit_path_resolver.py        # Расчет системных путей и прав доступа по типам юнитов
         │   ├── data_unit_installer.py       # Установка постоянных данных (/var/lib/de_<pkg>) без перезаписи
         │   ├── transaction_manager.py       # Журнал транзакций с атомарным LIFO-откатом
-        │   └── file_installer.py            # Копирование файлов/директорий, симлинки, декларативные dirs/chmod
+        │   └── file_installer.py            # Копирование файлов/директорий, симлинки, декларативные dirs/chmod и xattr macOS
         ├── env/
-        │   ├── env_parser.py                # Парсер .env с сохранением комментариев и разбором {{PROMPT:...}}
+        │   ├── env_parser.py                # Парсер .env с сохранением комментариев, #AUTO# и разбором {{PROMPT:...}}
         │   ├── secret_masker.py             # Маскирование секретов в логах
-        │   └── env_upsert_manager.py        # Неразрушающий upsert .env, пресеты ./env/<pkg>.env, callback подтверждения из TUI
+        │   ├── env_upsert_manager.py        # Неразрушающий upsert .env, внутреннее хранилище пресетов и apply в системный .env
+        │   ├── env_config_editor.py         # Команда deploy-engine config <pkg> [--preset] для дефолтного редактора ОС
+        │   └── env_confirmation_gate.py     # Барьер обязательного подтверждения .env до установки пакетов без пресета
         ├── lifecycle/
-        │   ├── hook_context.py              # Интерполяция макросов ({{SYS_BIN}}, {{ENV_DIR}}, {{DATA_DIR}})
+        │   ├── hook_context.py              # Интерполяция макросов ({{SYS_BIN}}, {{ENV_DIR}}, {{DATA_DIR}}, {{OPT_DIR}})
         │   └── hook_executor.py             # Выполнение хуков с блокировкой rm в манифестах
         ├── state/
-        │   ├── state_repository.py          # Управление /etc/default/state.json (с сохранением manifest_path)
+        │   ├── state_repository.py          # Управление state.json (с сохранением manifest_path)
         │   ├── package_inspector.py         # Инспекция пакетов (list, info, статус служб, логи install_DATE.log)
         │   └── backup_manager.py            # Версионированные бэкапы и восстановление (backup / restore)
         ├── remote/
         │   ├── ssh_client.py                # Выполнение команд и передача файлов через ssh/scp
         │   └── remote_deployer.py           # Двухуровневый удаленный деплой (Полный и Сокращенный режимы, Remote TUI)
         └── ui/
+            ├── activity_indicator.py        # Неблокирующий Брайль-спиннер, счетчик [MM:SS] и метки времени [HH:MM:SS]
+            ├── plan_executor.py             # Построение порядка вкладок и синхронное выполнение плана TUI
             ├── package_tree.py              # Дерево пакетов, бэкапов и архивов восстановления
             ├── plan_preview.py              # Виджет предпросмотра плана развертывания
-            ├── env_editor_modal.py          # Компактное модальное окно редактирования .env [E]
-            ├── package_env_panel.py         # Встроенная панель редактирования и подтверждения .env на вкладке пакета
-            ├── execution_modal.py           # Многовкладочное окно выполнения с раздельной индикацией .env (🔒) и установки (✅)
+            ├── env_editor_modal.py          # Компактное модальное окно редактирования .env [E] (пресет / применить в системный)
+            ├── package_env_panel.py         # Встроенная панель обязательного подтверждения .env на вкладке пакета
+            ├── execution_modal.py           # Многовкладочное окно выполнения с барьером .env, очисткой логов, временем и спиннером
             ├── package_details_modal.py     # Карточка пакета (инфо, лог установки, статус/логи службы)
             └── styles.py                    # Таблица стилей CSS для Textual
 ```
@@ -103,9 +109,10 @@ deploy-engine/
 ## 🔑 Ключи запуска (`main.py`) и переменные ENV
 
 ### Ключи командной строки
-- **Позиционные аргументы (`pos_args`)**: команда (`install`, `uninstall`, `reinstall`, `backup`, `restore`, `list`, `info`, `scan`, `tui`, `help`) и/или имена целевых пакетов (или путь к папке/манифесту).
+- **Позиционные аргументы (`pos_args`)**: команда (`install`, `uninstall`, `reinstall`, `config`, `backup`, `restore`, `list`, `info`, `completion`, `scan`, `tui`, `help`) и/или имена целевых пакетов (или путь к папке/манифесту).
 - **`--tui`, `-u`**: принудительный запуск TUI.
 - **`--info`, `-i [ПАКЕТ]`**: вывод подробной карточки пакета в CLI.
+- **`--preset`**: открыть пресет из внутреннего хранилища вместо системного `.env` (для команды `config`).
 - **`--manifest`, `-m <ПУТЬ>`**: путь к `manifest.json` или папке пакетов.
 - **`--packages-dir`, `-d <ПУТЬ>`**: корневая директория дерева пакетов.
 - **`--comment`, `-c <ТЕКСТ>`**: комментарий к бэкапу (`backup`).
@@ -120,7 +127,7 @@ deploy-engine/
 - **`--remote`, `-r [user@]host[:port]`**: удаленное выполнение по SSH.
 - **`--remote-dir <ПУТЬ>`**: каталог `deploy-engine` на удаленном сервере (по умолчанию `/opt/de_deploy-engine`).
 - **`--config <ФАЙЛ>`**: путь к кастомному `.env` файлу движка.
-- **`--yes`, `-y`**: неинтерактивный режим CLI без запросов `/dev/tty`.
+- **`--yes`, `-y`**: неинтерактивный режим CLI без запросов `/dev/tty` (останавливает установку при незаполненных обязательных `{{PROMPT:...}}` без дефолта).
 - **`--json`**: вывод в формате JSON.
 - **`--verbose`, `-v`**: подробный отладочный вывод.
 
@@ -133,8 +140,9 @@ deploy-engine/
 - `DE_LOCAL_ENV_DIR` — каталог локальных пресетов (`./env` или `/var/lib/de_deploy-engine/env`).
 - `DE_BACKUP_DIR` — каталог бэкапов (`./backup` или `/var/lib/de_deploy-engine/backup`).
 - `DE_REMOTE_ENGINE_DIR` — путь к движку на удаленном хосте (`/opt/de_deploy-engine`).
-- `DE_SYS_BIN` — путь к системным бинарникам (`/usr/local/bin`).
-- `DE_SYS_SYSTEMD` — путь к юнитам systemd (`/etc/systemd/system`).
-- `DE_ENV_PATH` — путь к каталогу окружения (`/etc/default`).
-- `DE_STATE_DIR` — путь к каталогу состояния (`/var/lib`).
-- `DE_VENV_PATH` — путь к виртуальному окружению Python (`.venv`).
+- `DE_SYS_BIN` — путь к системным бинарникам (`#AUTO#`: `/usr/local/bin` / `/opt/homebrew/bin` / `~/.local/bin`).
+- `DE_SYS_SYSTEMD` — путь к юнитам служб (`#AUTO#`: `/etc/systemd/system` / `/Library/LaunchDaemons` / `~/Library/LaunchAgents`).
+- `DE_ENV_PATH` — путь к каталогу окружения (`#AUTO#`: `/etc/default` / `~/.config/deploy-engine/default`).
+- `DE_STATE_DIR` — путь к каталогу состояния (`#AUTO#`: `/var/lib` / `~/.local/state/deploy-engine`).
+- `DE_OPT_DIR` — путь к каталогу рабочих файлов пакетов (`#AUTO#`: `/opt` / `~/.local/opt`).
+- `DE_VENV_PATH` — путь к виртуальному окружению Python (`#AUTO#`: `/opt/de_deploy-engine/files/.venv` или `./.venv`).

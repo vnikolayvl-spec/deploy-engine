@@ -43,10 +43,10 @@ class PackageEnvPanel(Vertical):
         }
         self.approval_event = threading.Event()
         self.locked = False
+        self.cancelled = False
 
-        preset_exists = os.path.isfile(self.preset_path)
-        missing_req = self._has_missing_required(self.approved_values)
-        self.approved = bool(preset_exists and not missing_req)
+        needs_confirm = self.engine.env_manager.needs_env_confirmation(pkg_name, src_path)
+        self.approved = not needs_confirm
         if self.approved:
             self.approval_event.set()
 
@@ -78,7 +78,7 @@ class PackageEnvPanel(Vertical):
 
         with Vertical(id=f"env_editor_box_{self.safe_pkg}", classes="env_inline_editor"):
             yield Label(
-                f"🔐 Настройка переменных окружения: {self.pkg_name} ({self.unit_name})",
+                f"🔐 Обязательное подтверждение .env до установки: {self.pkg_name} ({self.unit_name})",
                 classes="env_inline_title",
             )
             with VerticalScroll(id=f"env_scroll_{self.safe_pkg}", classes="env_inline_scroll"):
@@ -86,8 +86,9 @@ class PackageEnvPanel(Vertical):
                     key = entry["key"]
                     req = entry.get("required_prompt", False)
                     has_p = entry.get("has_prompt", False)
+                    is_auto = entry.get("is_auto", False)
                     notice = entry.get("notice") or ""
-                    badge = " [❗ ОБЯЗАТЕЛЬНО]" if req else (" [PROMPT]" if has_p else "")
+                    badge = " [❗ ОБЯЗАТЕЛЬНО]" if req else (" [АВТО]" if is_auto else (" [PROMPT]" if has_p else ""))
                     hint = f" ({notice})" if notice else ""
                     with Horizontal(classes="env_compact_row"):
                         yield Label(
@@ -96,7 +97,7 @@ class PackageEnvPanel(Vertical):
                         )
                         yield Input(
                             value=str(entry.get("value", "")),
-                            placeholder=str(entry.get("default_value") or notice or "Введите значение..."),
+                            placeholder=str("#AUTO# — автоопределение" if is_auto else (entry.get("default_value") or notice or "Введите значение...")),
                             id=f"pkg_env_inp_{self.safe_pkg}_{idx}",
                             classes="env_compact_input",
                         )
@@ -106,6 +107,11 @@ class PackageEnvPanel(Vertical):
                     "✅ Принять .env",
                     variant="success",
                     id=f"btn_env_approve_{self.safe_pkg}",
+                )
+                yield Button(
+                    "✖ Отмена",
+                    variant="error",
+                    id=f"btn_env_cancel_{self.safe_pkg}",
                 )
 
     def on_mount(self) -> None:
@@ -171,6 +177,9 @@ class PackageEnvPanel(Vertical):
             self.approved = True
             self.approval_event.set()
             self._sync_visibility_and_validation()
+        elif btn_id == f"btn_env_cancel_{self.safe_pkg}" and not self.locked:
+            self.cancelled = True
+            self.approval_event.set()
         elif btn_id == f"btn_env_reopen_{self.safe_pkg}" and not self.locked:
             self.approved = False
             self.approval_event.clear()

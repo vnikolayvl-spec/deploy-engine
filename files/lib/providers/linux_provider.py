@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import time
 from typing import Dict, List, Optional
-from lib.config import ENV_PATH, STATE_DIR, SYS_BIN, SYS_SYSTEMD
+from lib.config import ENV_PATH, OPT_DIR, STATE_DIR, SYS_BIN, SYS_SYSTEMD, is_auto_value
 from lib.core.deploy_engine_error import DeployEngineError
 from lib.core.execution_context import ExecutionContext
 from lib.providers.base_provider import BaseEnvironmentProvider
@@ -60,13 +60,17 @@ class LinuxProvider(BaseEnvironmentProvider):
         return None
 
     def get_paths(self) -> Dict[str, str]:
-        """Возвращает стандартные системные пути Linux."""
+        """Возвращает системные пути Linux с учетом явных (не #AUTO#) переопределений."""
+        def _pick(env_key: str, default_val: str) -> str:
+            val = os.environ.get(env_key, "").strip()
+            return val if (val and not is_auto_value(val)) else default_val
+
         return {
-            "sys_bin": SYS_BIN,
-            "sys_systemd": SYS_SYSTEMD,
-            "env_path": ENV_PATH,
-            "state_dir": STATE_DIR,
-            "opt_dir": "/opt",
+            "sys_bin": _pick("DE_SYS_BIN", SYS_BIN),
+            "sys_systemd": _pick("DE_SYS_SYSTEMD", SYS_SYSTEMD),
+            "env_path": _pick("DE_ENV_PATH", ENV_PATH),
+            "state_dir": _pick("DE_STATE_DIR", STATE_DIR),
+            "opt_dir": _pick("DE_OPT_DIR", OPT_DIR),
         }
 
     @staticmethod
@@ -161,11 +165,15 @@ class LinuxProvider(BaseEnvironmentProvider):
             return
 
         self.context.log(f"🔄 Обновление индекса пакетов ({' '.join(update_cmd)})...")
+        self.context.set_phase(f"Обновление индекса пакетов ({pm})...")
+        run_env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"} if pm == "apt-get" else None
         try:
-            self.context.run_logged_subprocess(update_cmd)
+            self.context.run_logged_subprocess(update_cmd, env=run_env)
             self._touch_stamp(self._get_stamp_path(pm))
         except subprocess.CalledProcessError as err:
             raise DeployEngineError(f"Ошибка при обновлении индекса пакетов ({' '.join(update_cmd)}): {err}")
+        finally:
+            self.context.set_phase("")
 
     def install_sys_packages(self, packages: List[str]) -> bool:
         """Устанавливает системные пакеты через обнаруженный пакетный менеджер Linux."""
@@ -200,10 +208,15 @@ class LinuxProvider(BaseEnvironmentProvider):
         else:
             cmd = [pm, "install", "-y"] + unique_pkgs
 
+        preview_pkgs = ", ".join(unique_pkgs[:4]) + ("..." if len(unique_pkgs) > 4 else "")
+        self.context.set_phase(f"Установка системных пакетов ({pm}: {preview_pkgs})...")
+        run_env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"} if pm == "apt-get" else None
         try:
-            ret = self.context.run_logged_subprocess(cmd)
+            ret = self.context.run_logged_subprocess(cmd, env=run_env)
             return ret == 0
         except subprocess.CalledProcessError as err:
             raise DeployEngineError(f"Ошибка при установке системных пакетов {unique_pkgs}: {err}")
         except FileNotFoundError:
             raise DeployEngineError(f"Пакетный менеджер {pm} не найден в системе.")
+        finally:
+            self.context.set_phase("")

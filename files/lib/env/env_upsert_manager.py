@@ -5,7 +5,7 @@ import os
 import re
 import shutil
 import sys
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from lib.config import ENV_PATH, ENV_PREFIX, LOCAL_ENV_DIR
 from lib.core.execution_context import ExecutionContext
 from lib.env.env_parser import EnvParser
@@ -43,9 +43,31 @@ class EnvUpsertManager:
         """Возвращает путь к локальному файлу предустановок ./env/<pkg_name>.env."""
         return os.path.abspath(os.path.join(self.local_env_dir, f"{pkg_name}.env"))
 
+    def has_saved_preset(self, pkg_name: str) -> bool:
+        """Возвращает True, если во внутреннем хранилище есть сохраненный пресет пакета."""
+        try:
+            return os.path.isfile(self.get_local_preset_path(pkg_name))
+        except OSError:
+            return False
+
+    def needs_env_confirmation(self, pkg_name: str, template_path: str) -> bool:
+        """
+        Возвращает True, если перед установкой требуется обязательное подтверждение .env:
+        - пресет еще не сохранен во внутреннем хранилище (или задан --clean-env);
+        - либо в пресете остались незаполненные обязательные поля {{PROMPT:...}}.
+        """
+        if self.context.clean_env or not self.has_saved_preset(pkg_name):
+            return True
+        preset_path = self.get_local_preset_path(pkg_name)
+        entries = self.parser.parse_editable_entries(template_path, override_paths=[preset_path])
+        for entry in entries:
+            if entry.get("required_prompt") and not str(entry.get("value", "")).strip():
+                return True
+        return False
+
     def save_local_preset(self, pkg_name: str, template_path: str, values: Dict[str, str]) -> str:
         """
-        Сохраняет отредактированные в TUI переменные в ./env/<pkg_name>.env,
+        Сохраняет отредактированные переменные во внутреннее хранилище (<LOCAL_ENV_DIR>/<pkg>.env),
         не затрагивая исходный файл шаблона в репозитории пакетов.
         """
         preset_path = self.get_local_preset_path(pkg_name)
@@ -55,6 +77,35 @@ class EnvUpsertManager:
             f.write(rendered)
         os.chmod(preset_path, 0o600)
         return preset_path
+
+    def apply_preset_to_system_env(
+        self, pkg_name: str, template_path: str, dest_path: str, values: Dict[str, str]
+    ) -> Tuple[str, Optional[str]]:
+        """
+        Сохраняет пресет во внутреннее хранилище и применяет его в системный .env с бэкапом .de_bak.
+        Исходный файл в репозитории не изменяется. При PermissionError возвращает мягкое предупреждение.
+        """
+        preset_path = self.save_local_preset(pkg_name, template_path, values)
+        try:
+            dest_dir = os.path.dirname(dest_path)
+            if dest_dir and not os.path.exists(dest_dir):
+                os.makedirs(dest_dir, mode=0o700, exist_ok=True)
+            if os.path.isfile(dest_path):
+                shutil.copy2(dest_path, f"{dest_path}.de_bak")
+            with open(preset_path, "r", encoding="utf-8") as src_f:
+                content = src_f.read()
+            with open(dest_path, "w", encoding="utf-8") as dst_f:
+                dst_f.write(content)
+            os.chmod(dest_path, 0o600)
+            return preset_path, None
+        except PermissionError:
+            warn = (
+                f"❗ Пресет сохранен ({preset_path}), но нет прав на запись системного файла '{dest_path}'. "
+                f"Запустите с sudo или выполните: sudo deploy-engine config {pkg_name}"
+            )
+            return preset_path, warn
+        except OSError as err:
+            return preset_path, f"❗ Пресет сохранен ({preset_path}), но не удалось обновить '{dest_path}': {err}"
 
     @staticmethod
     def _infer_pkg_name_from_dest(dest_path: str) -> Optional[str]:

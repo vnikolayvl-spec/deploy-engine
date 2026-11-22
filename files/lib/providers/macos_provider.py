@@ -54,34 +54,21 @@ class MacOSProvider(BaseEnvironmentProvider):
         return pm
 
     def get_paths(self) -> Dict[str, str]:
-        """Возвращает нативные пути macOS с учетом прав текущего пользователя."""
-        is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-        home = os.path.expanduser("~")
+        """Возвращает нативные пути macOS с учетом прав пользователя и явных (не #AUTO#) переопределений ENV."""
+        from lib.config import get_platform_default_paths, is_auto_value
 
-        if os.path.isdir("/opt/homebrew/bin") and os.access("/opt/homebrew/bin", os.W_OK):
-            sys_bin = "/opt/homebrew/bin"
-        elif os.access("/usr/local/bin", os.W_OK) or is_root:
-            sys_bin = "/usr/local/bin"
-        else:
-            sys_bin = os.path.join(home, ".local", "bin")
+        defaults = get_platform_default_paths(platform_name="darwin")
 
-        if is_root:
-            sys_systemd = "/Library/LaunchDaemons"
-            env_path = "/etc/default"
-            state_dir = "/var/lib"
-            opt_dir = "/opt"
-        else:
-            sys_systemd = os.path.join(home, "Library", "LaunchAgents")
-            env_path = os.path.join(home, ".config", "deploy-engine", "default")
-            state_dir = os.path.join(home, ".local", "state", "deploy-engine")
-            opt_dir = os.path.join(home, ".local", "opt")
+        def _pick(env_key: str) -> str:
+            val = os.environ.get(env_key, "").strip()
+            return val if (val and not is_auto_value(val)) else defaults[env_key]
 
         return {
-            "sys_bin": sys_bin,
-            "sys_systemd": sys_systemd,
-            "env_path": env_path,
-            "state_dir": state_dir,
-            "opt_dir": opt_dir,
+            "sys_bin": _pick("DE_SYS_BIN"),
+            "sys_systemd": _pick("DE_SYS_SYSTEMD"),
+            "env_path": _pick("DE_ENV_PATH"),
+            "state_dir": _pick("DE_STATE_DIR"),
+            "opt_dir": _pick("DE_OPT_DIR"),
         }
 
     # Сопоставление пакетных имен с бинарниками, которые уже встроены в macOS или установлены
@@ -154,11 +141,15 @@ class MacOSProvider(BaseEnvironmentProvider):
         else:
             cmd = [pm_bin, "install"] + to_install
 
+        preview_pkgs = ", ".join(to_install[:4]) + ("..." if len(to_install) > 4 else "")
+        self.context.set_phase(f"Установка системных пакетов macOS ({pm}: {preview_pkgs})...")
         try:
             ret = self.context.run_logged_subprocess(cmd)
             return ret == 0
         except subprocess.CalledProcessError as err:
             raise DeployEngineError(f"Ошибка при установке пакетов через {pm} ({to_install}): {err}")
+        finally:
+            self.context.set_phase("")
 
     def translate_hook_command(self, command: str, pkg_name: str = "") -> str:
         """Автоматически транслирует команды systemctl в вызовы launchctl для .plist на macOS."""
