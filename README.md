@@ -1,4 +1,4 @@
-# 🔧 Deploy Engine (версия 9.1.0)
+# 🔧 Deploy Engine (версия 9.1.1)
 
 **Deploy Engine** — модульный, кроссплатформенный и автономный оркестратор развертывания инфраструктуры в концепции **Infrastructure-as-Code (IaC)** на Python.
 

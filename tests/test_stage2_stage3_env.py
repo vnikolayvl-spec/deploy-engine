@@ -197,7 +197,7 @@ class TestStage2AndStage3Env(unittest.TestCase):
                 "textual": {}, "textual.app": {"App": _Dummy, "ComposeResult": object},
                 "textual.containers": {"Horizontal": _Dummy, "Vertical": _Dummy, "VerticalScroll": _Dummy},
                 "textual.screen": {"ModalScreen": _Dummy},
-                "textual.widgets": {"Button": _Dummy, "Input": _Dummy, "Label": _Dummy, "RichLog": _Dummy},
+                "textual.widgets": {"Button": _Dummy, "ContentSwitcher": _Dummy, "Input": _Dummy, "Label": _Dummy, "RichLog": _Dummy},
             }.items():
                 m = ModuleType(mod_name)
                 for k, v in attrs.items(): setattr(m, k, v)

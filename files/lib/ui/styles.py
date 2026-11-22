@@ -230,6 +230,7 @@ PackageDetailsModal, ExecutionModal {
 }
 .exec_pkg_pane {
     height: 1fr;
+    display: none;
 }
 #pkg_details_log, #exec_modal_log, .exec_pkg_log {
     height: 1fr;

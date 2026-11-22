@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, RichLog
+from textual.widgets import Button, ContentSwitcher, Label, RichLog
 
 from lib.ui.activity_indicator import ActivityIndicator
 from lib.ui.package_env_panel import PackageEnvPanel
@@ -54,7 +54,7 @@ class ExecutionModal(ModalScreen):
                     safe_p = self.pkg_safe_map[pkg_name]
                     yield Button(f"📦 {pkg_name}", variant="default", id=f"tab_btn_{safe_p}", classes="exec_tab_btn")
 
-            with Vertical(id="exec_panes_container"):
+            with ContentSwitcher(initial="exec_modal_log", id="exec_panes_container"):
                 yield RichLog(id="exec_modal_log", markup=False, highlight=False, wrap=True)
                 for pkg_name in self.ordered_pkg_names:
                     safe_p = self.pkg_safe_map[pkg_name]
@@ -102,6 +102,8 @@ class ExecutionModal(ModalScreen):
         self.indicator.reset()
         self.clear_all_logs()
         self._switch_active_tab("__general__")
+        if hasattr(self, "call_after_refresh"):
+            self.call_after_refresh(lambda: self._switch_active_tab(self.active_tab))
         for pkg_name in self.ordered_pkg_names:
             self._refresh_pkg_tab_label(pkg_name)
         if hasattr(self, "set_interval"):
@@ -118,7 +120,8 @@ class ExecutionModal(ModalScreen):
         env_badge = (" 🔒" if panel.approved else (" ❗" if panel.has_missing_required_now() else " 🔧")) if panel is not None else ""
         try:
             self.query_one(f"#tab_btn_{safe_p}", Button).label = f"{status_icon} {pkg_name}{env_badge}"
-            if panel is not None: self.query_one(f"#exec_log_{safe_p}", RichLog).display = bool(panel.approved or panel.locked)
+            if panel is not None and self.active_tab == pkg_name:
+                self.query_one(f"#exec_log_{safe_p}", RichLog).display = bool(panel.approved or panel.locked)
         except Exception: pass
 
     def _on_pkg_env_state_changed(self, pkg_name: str, _approved: bool, _missing_req: bool) -> None:
@@ -132,17 +135,21 @@ class ExecutionModal(ModalScreen):
         except Exception: pass
 
     def _switch_active_tab(self, tab_key: str) -> None:
-        if not self.is_mounted: return
         self.active_tab = tab_key
-        self.query_one("#tab_btn___general__", Button).variant = "primary" if tab_key == "__general__" else "default"
-        self.query_one("#exec_modal_log", RichLog).display = (tab_key == "__general__")
+        if not self.is_mounted: return
+        target_id = "exec_modal_log" if tab_key == "__general__" else f"exec_pane_{self.pkg_safe_map.get(tab_key, tab_key)}"
+        try: self.query_one("#exec_panes_container", ContentSwitcher).current = target_id
+        except Exception: pass
+        try: self.query_one("#tab_btn___general__", Button).variant = "primary" if tab_key == "__general__" else "default"
+        except Exception: pass
         for pkg_name in self.ordered_pkg_names:
             safe_p, is_cur = self.pkg_safe_map[pkg_name], (tab_key == pkg_name)
-            self.query_one(f"#tab_btn_{safe_p}", Button).variant = "primary" if is_cur else "default"
-            self.query_one(f"#exec_pane_{safe_p}", Vertical).display = is_cur
+            try: self.query_one(f"#tab_btn_{safe_p}", Button).variant = "primary" if is_cur else "default"
+            except Exception: pass
             if is_cur and pkg_name in self.env_panels:
                 panel = self.env_panels[pkg_name]
-                self.query_one(f"#exec_log_{safe_p}", RichLog).display = bool(panel.approved or panel.locked)
+                try: self.query_one(f"#exec_log_{safe_p}", RichLog).display = bool(panel.approved or panel.locked)
+                except Exception: pass
 
     def _trigger_pkg_env_tab(self, pkg_name: str) -> None:
         self._switch_active_tab(pkg_name)

@@ -50,7 +50,7 @@ class TestStage4TuiLogging(unittest.TestCase):
                 "textual": {}, "textual.app": {"App": _Dummy, "ComposeResult": object},
                 "textual.containers": {"Horizontal": _Dummy, "Vertical": _Dummy, "VerticalScroll": _Dummy},
                 "textual.screen": {"ModalScreen": _Dummy},
-                "textual.widgets": {"Button": _Dummy, "Input": _Dummy, "Label": _Dummy, "RichLog": _Dummy},
+                "textual.widgets": {"Button": _Dummy, "ContentSwitcher": _Dummy, "Input": _Dummy, "Label": _Dummy, "RichLog": _Dummy},
             }.items():
                 m = ModuleType(mod_name)
                 for k, v in attrs.items(): setattr(m, k, v)
@@ -118,7 +118,14 @@ class TestStage4TuiLogging(unittest.TestCase):
         pkg_log = SimpleNamespace(write=pkg_lines.append, clear=pkg_lines.clear, display=True)
         status_lbl = SimpleNamespace(update=status_updates.append)
 
+        switcher = SimpleNamespace(current="exec_modal_log")
+        tab_gen = SimpleNamespace(variant="primary")
+        tab_pkg = SimpleNamespace(label="", variant="default")
+
         def _query(selector, *_a):
+            if selector == "#exec_panes_container": return switcher
+            if selector == "#tab_btn___general__": return tab_gen
+            if selector == "#tab_btn_alpha-pkg": return tab_pkg
             if selector == "#exec_modal_log": return gen_log
             if selector == "#exec_log_alpha-pkg": return pkg_log
             if selector == "#exec_modal_status": return status_lbl
@@ -140,7 +147,17 @@ class TestStage4TuiLogging(unittest.TestCase):
         for line in gen_lines + pkg_lines:
             self.assertRegex(line, r"^\[\d{2}:\d{2}:\d{2}\] ")
 
-        # 3. Обновление фазы и тик спиннера обновляют статус и кнопку
+        # 3. Переключение вкладок через ContentSwitcher гарантирует отображение ровно одной панели
+        modal._switch_active_tab("alpha-pkg")
+        self.assertEqual(switcher.current, "exec_pane_alpha-pkg")
+        self.assertEqual(tab_pkg.variant, "primary")
+        self.assertEqual(tab_gen.variant, "default")
+        modal._switch_active_tab("__general__")
+        self.assertEqual(switcher.current, "exec_modal_log")
+        self.assertEqual(tab_gen.variant, "primary")
+        self.assertEqual(tab_pkg.variant, "default")
+
+        # 4. Обновление фазы и тик спиннера обновляют статус и кнопку
         modal.indicator.set_phase("Обновление индекса пакетов (apt-get)...")
         modal._tick_activity_indicator()
         self.assertTrue(status_updates)

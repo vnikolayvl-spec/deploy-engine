@@ -193,9 +193,9 @@ class TestBackupAndRestore(unittest.TestCase):
                 "textual.containers": {"Horizontal": _DummyWidget, "Vertical": _DummyWidget, "VerticalScroll": _DummyWidget},
                 "textual.screen": {"ModalScreen": _DummyWidget},
                 "textual.widgets": {
-                    "Button": _DummyWidget, "Checkbox": _DummyWidget, "Footer": _DummyWidget, "Header": _DummyWidget,
-                    "Input": _DummyWidget, "Label": _DummyWidget, "OptionList": _DummyWidget, "RichLog": _DummyWidget,
-                    "Select": _DummyWidget, "Tree": _DummyWidget,
+                    "Button": _DummyWidget, "Checkbox": _DummyWidget, "ContentSwitcher": _DummyWidget, "Footer": _DummyWidget,
+                    "Header": _DummyWidget, "Input": _DummyWidget, "Label": _DummyWidget, "OptionList": _DummyWidget,
+                    "RichLog": _DummyWidget, "Select": _DummyWidget, "Tree": _DummyWidget,
                 },
                 "textual.widgets.option_list": {"Option": _DummyWidget},
                 "textual.widgets.tree": {"TreeNode": _DummyWidget},
