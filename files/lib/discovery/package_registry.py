@@ -140,7 +140,7 @@ class PackageRegistry:
     def load_from_cache(self) -> bool:
         """Загружает базу пакетов и категорий из кэша packages.json (с проверкой актуальности mtime)."""
         data = self.cache_manager.load_cache()
-        if not data or data.get("version") != "2.3.0" or "packages" not in data or "folders" not in data:
+        if not data or data.get("version") != "3.0.0" or "packages" not in data or "folders" not in data:
             return False
 
         updated_at = float(data.get("updated_at") or 0)
@@ -163,7 +163,7 @@ class PackageRegistry:
         return len(self.packages) > 0 or len(self.folders) > 0
 
     def save_to_cache(self) -> bool:
-        return self.cache_manager.save_cache(self.packages, version="2.3.0", folders_index=self.folders)
+        return self.cache_manager.save_cache(self.packages, version="3.0.0", folders_index=self.folders)
 
     @staticmethod
     def _has_child_namespaces(ns: str, all_namespaces: List[str]) -> bool:

@@ -15,6 +15,7 @@ from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, Opti
 from textual.widgets.option_list import Option
 from textual.widgets.tree import TreeNode
 
+from lib.core.version_utils import get_engine_version
 from lib.ui.env_editor_modal import EnvEditorModal
 from lib.ui.execution_modal import ExecutionModal
 from lib.ui.package_details_modal import PackageDetailsModal
@@ -25,7 +26,7 @@ from lib.utils import dispatch_localized_binding, normalize_hotkey
 
 
 class DeployApp(App):
-    TITLE = "Independent Multi-Action Deployer"
+    TITLE = f"Deploy Engine v{get_engine_version()}"
     CSS = APP_CSS
     BINDINGS = [("e", "edit_current_env", "Настроить .env")]
 
@@ -43,6 +44,7 @@ class DeployApp(App):
         self.engine = engine
         self.remote_deployer = remote_deployer
         self.actions: Dict[str, str] = {}
+        self.unit_actions: Dict[str, Set[str]] = {}
         self.backup_plans: Set[str] = set()
         self.restore_plans: Dict[str, str] = {}
         self._last_q_time: float = 0.0
@@ -91,7 +93,7 @@ class DeployApp(App):
         self.engine.context.in_tui = True
         remote_host = getattr(self.engine.context, "remote", None)
         if remote_host:
-            self.title = f"Deploy Engine [REMOTE: {remote_host}]"
+            self.title = f"Deploy Engine v{get_engine_version()} [REMOTE: {remote_host}]"
         self.render_live_preview()
         self.query_one("#packages_tree", InfrastructureTree).focus()
 
@@ -137,20 +139,18 @@ class DeployApp(App):
     def _sync_plan_tabs(self) -> None:
         """Обновляет левый список: пакеты с действиями и их зависимости вверху списка, установленные без действий — ниже."""
         opt_list, installed_keys = self.query_one("#plan_pkg_list", OptionList), self._resolve_installed_keys()
-        explicit_planned = {k for k, v in self.actions.items() if v in ("install", "reinstall", "uninstall")} | set(self.backup_plans) | {k for k, v in self.restore_plans.items() if v}
+        explicit_planned = {k for k, v in self.actions.items() if v in ("install", "reinstall", "uninstall")} | {k for k, u in self.unit_actions.items() if u} | set(self.backup_plans) | {k for k, v in self.restore_plans.items() if v}
         dep_keys: Set[str] = set()
         install_or_reinstall = [k for k, v in self.actions.items() if v in ("install", "reinstall") and self.engine.registry.has(k)]
         if install_or_reinstall:
             try:
                 resolved_deps, _ = self.engine.dep_graph.resolve_install_order(install_or_reinstall, is_installed_fn=self.engine.state_repo.get_installed_package)
                 for rk in resolved_deps:
-                    if rk not in explicit_planned and self.engine.registry.has(rk):
-                        dep_keys.add(rk)
-            except Exception:
-                pass
+                    if rk not in explicit_planned and self.engine.registry.has(rk): dep_keys.add(rk)
+            except Exception: pass
         planned_keys = explicit_planned | dep_keys
         all_candidates = sorted([k for k in (installed_keys | planned_keys) if not self.engine.registry.has(k) or self.engine.is_package_compatible(k)], key=lambda k: (0 if k in planned_keys else 1, k))
-        current_sig = tuple((k, k in installed_keys, k in dep_keys, self.engine.registry.has(k), self.actions.get(k, ""), k in self.backup_plans, self.restore_plans.get(k, "")) for k in all_candidates)
+        current_sig = tuple((k, k in installed_keys, k in dep_keys, self.engine.registry.has(k), self.actions.get(k, ""), tuple(sorted(self.unit_actions.get(k, set()))), k in self.backup_plans, self.restore_plans.get(k, "")) for k in all_candidates)
         if current_sig == self._last_tabs_sig: return
         self._last_tabs_sig = current_sig
         if self.selected_filter_pkg not in all_candidates: self.selected_filter_pkg = None
@@ -208,7 +208,7 @@ class DeployApp(App):
     def _run_plan_in_modal(self, plan_dict: Dict[str, Any], clear_current_plan: bool = True) -> None:
         def _on_exec_closed(_ok: Any) -> None:
             if clear_current_plan:
-                self.actions.clear(); self.backup_plans.clear(); self.restore_plans.clear()
+                self.actions.clear(); self.unit_actions.clear(); self.backup_plans.clear(); self.restore_plans.clear()
             else:
                 for k in plan_dict:
                     if not k.startswith("__"): self.actions.pop(k, None)
@@ -281,11 +281,13 @@ class DeployApp(App):
         elif event.button.id == "btn_edit_pkg_env": self.action_edit_current_env()
         elif event.button.id == "btn_run":
             active_targets: Dict[str, Any] = {k: v for k, v in self.actions.items() if v != "none" and self.engine.registry.has(k) and self.engine.is_package_compatible(k)}
+            unit_updates = {k: sorted(u) for k, u in self.unit_actions.items() if u and self.engine.registry.has(k) and self.engine.is_package_compatible(k)}
             backups = sorted(k for k in self.backup_plans if self.engine.registry.has(k) and self.engine.is_package_compatible(k))
             restores = {k: v for k, v in self.restore_plans.items() if v and self.engine.registry.has(k) and self.engine.is_package_compatible(k)}
-            if not active_targets and not backups and not restores:
-                self.query_one("#preview_log", PlanPreviewLog).write("[bold red]❌ План пуст! Выберите пакеты, пункт бэкапа или архив восстановления клавишей ПРОБЕЛ.[/bold red]")
+            if not active_targets and not unit_updates and not backups and not restores:
+                self.query_one("#preview_log", PlanPreviewLog).write("[bold red]❌ План пуст! Выберите пакеты, юниты, бэкап или архив восстановления клавишей ПРОБЕЛ.[/bold red]")
                 return
+            if unit_updates: active_targets["__unit_updates__"] = unit_updates
             if backups: active_targets["__backup__"] = backups
             if restores: active_targets["__restore__"] = restores
             self._run_plan_in_modal(active_targets, clear_current_plan=True)

@@ -35,6 +35,10 @@ class PlanExecutor:
         for r_pkg in (actions_plan.get("__restore__") or {}).keys():
             if engine.registry.has(r_pkg):
                 raw_order.append((r_pkg, False))
+        for u_pkg, u_list in (actions_plan.get("__unit_updates__") or {}).items():
+            if u_list and engine.registry.has(u_pkg):
+                needs_env = any(str(u).endswith(".env") or str(u) == "deploy.env" for u in u_list)
+                raw_order.append((u_pkg, needs_env))
         for k, v in actions_plan.items():
             if v == "uninstall" and engine.registry.has(k):
                 raw_order.append((k, False))
@@ -72,6 +76,11 @@ class PlanExecutor:
             return
         to_backup = [p for p in (actions_plan.get("__backup__") or []) if engine.registry.has(p)]
         to_restore = {p: s for p, s in (actions_plan.get("__restore__") or {}).items() if s and engine.registry.has(p)}
+        to_unit_updates = {
+            p: list(u_list)
+            for p, u_list in (actions_plan.get("__unit_updates__") or {}).items()
+            if u_list and engine.registry.has(p)
+        }
         to_uninstall = [k for k, v in actions_plan.items() if v == "uninstall" and engine.registry.has(k)]
         to_reinstall = [k for k, v in actions_plan.items() if v == "reinstall" and engine.registry.has(k)]
         to_install = [k for k, v in actions_plan.items() if v == "install" and engine.registry.has(k)]
@@ -79,6 +88,8 @@ class PlanExecutor:
             engine.backup_packages(to_backup, comment=getattr(engine.context, "comment", ""))
         for pkg, arch_selector in to_restore.items():
             engine.restore_packages([pkg], selector=arch_selector)
+        for pkg, u_list in to_unit_updates.items():
+            engine.update_units(pkg, unit_names=u_list, with_hooks=False)
         for pkg in to_uninstall:
             engine.uninstall_package(pkg)
         for pkg in to_reinstall:

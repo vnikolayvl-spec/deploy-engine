@@ -6,6 +6,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 from lib.config import DATA_PREFIX, ENV_PREFIX
+from lib.core.version_utils import version_status
 from lib.state.state_repository import StateRepository
 
 
@@ -29,58 +30,57 @@ class PackageInspector:
         for ext, tp in ((".plist", "plist"), (".service", "service"), (".timer", "timer"), (".env", "env")):
             if filepath.endswith(ext): return tp
         if filepath.endswith((".sh", ".py")) or "/bin/" in filepath: return "script"
-        if os.path.isdir(filepath): return "file" if os.path.basename(filepath) == "files" else "dir"
+        if os.path.isdir(filepath):
+            bname = os.path.basename(filepath)
+            return "web" if bname == "web" else ("file" if bname == "files" else "dir")
         if os.path.basename(filepath).startswith("de_") or (os.path.basename(os.path.dirname(filepath)).startswith("de_") and "." not in os.path.basename(filepath)):
             return "dir"
         return "data" if ("/var/lib/" in filepath or "/state/" in filepath) else "file"
 
     def get_installed_list(self) -> List[Dict[str, Any]]:
-        """Возвращает список установленных пакетов."""
+        """Возвращает список установленных пакетов со статусом SemVer-обновлений."""
         installed_map = self.state_repo.get_state().get("installed", {})
-        return [
-            {
-                "package": name, "version": info.get("version", "unknown"), "namespace": info.get("namespace", name),
-                "description": info.get("desc", ""), "installed_at": self._format_date(info),
+        items: List[Dict[str, Any]] = []
+        for name, info in sorted(installed_map.items()):
+            ns = info.get("namespace", name)
+            reg_pkg = self.engine.registry.get(ns) if (self.engine and self.engine.registry.has(ns)) else (self.engine.registry.get(name) if (self.engine and self.engine.registry.has(name)) else None)
+            inst_v = str(info.get("version", "unknown"))
+            avail_v = str(reg_pkg.get("version", inst_v)) if reg_pkg else inst_v
+            items.append({
+                "package": name, "version": inst_v, "available_version": avail_v,
+                "update_status": version_status(inst_v, avail_v) if reg_pkg else "current",
+                "namespace": ns, "description": info.get("desc", ""), "installed_at": self._format_date(info),
                 "timestamp": info.get("installed_at", 0), "files_count": len(info.get("files", [])), "files": info.get("files", []),
-            }
-            for name, info in sorted(installed_map.items())
-        ]
+            })
+        return items
 
     def _collect_manifest_paths_and_meta(self, pkg_name: str, reg_pkg: Dict[str, Any]) -> tuple[List[str], Dict[str, Dict[str, str]], Dict[str, Dict[str, str]]]:
         """Собирает полный список всех системных путей (включая родительские папки и секцию dirs) из манифеста."""
         unit_meta_by_dest: Dict[str, Dict[str, str]] = {}
         unit_meta_by_bname: Dict[str, Dict[str, str]] = {}
         resolved_paths: List[str] = []
-        if not self.engine:
-            return resolved_paths, unit_meta_by_dest, unit_meta_by_bname
-
-        base_dir = reg_pkg.get("base_dir", ".")
-        paths = self.engine.provider.get_paths()
+        if not self.engine: return resolved_paths, unit_meta_by_dest, unit_meta_by_bname
+        base_dir, paths = reg_pkg.get("base_dir", "."), self.engine.provider.get_paths()
         opt_pkg_dir = os.path.join(paths.get("opt_dir", "/opt"), f"de_{pkg_name}")
         env_pkg_dir = os.path.join(paths["env_path"], f"{ENV_PREFIX}{pkg_name}")
         data_pkg_dir = os.path.join(paths["state_dir"], f"{DATA_PREFIX}{pkg_name}")
-        parent_labels = {
-            opt_pkg_dir: "Корневой каталог пакета в /opt",
-            env_pkg_dir: "Системный каталог конфигурации (.env)",
-            data_pkg_dir: "Системный каталог данных пакета",
-        }
-        for p_dir, p_desc in parent_labels.items():
+        for p_dir, p_desc in (
+            (opt_pkg_dir, "Корневой каталог пакета в /opt"),
+            (env_pkg_dir, "Системный каталог конфигурации (.env)"),
+            (data_pkg_dir, "Системный каталог данных пакета"),
+        ):
             unit_meta_by_dest[p_dir] = {"unit": os.path.basename(p_dir), "type": "dir", "desc": p_desc}
 
         def _add_with_parent(dest_p: str) -> None:
             for p_dir in (opt_pkg_dir, env_pkg_dir, data_pkg_dir):
-                if dest_p.startswith(p_dir + os.sep) and p_dir not in resolved_paths:
-                    resolved_paths.append(p_dir)
-            if dest_p not in resolved_paths:
-                resolved_paths.append(dest_p)
+                if dest_p.startswith(p_dir + os.sep) and p_dir not in resolved_paths: resolved_paths.append(p_dir)
+            if dest_p not in resolved_paths: resolved_paths.append(dest_p)
 
         for u_name, u_spec in (reg_pkg.get("units") or {}).items():
             try:
                 _, dest_p, _, u_type = self.engine.path_resolver.resolve(pkg_name, u_name, u_spec, base_dir)
-                u_desc = (u_spec or {}).get("desc", "")
-                meta = {"unit": u_name, "type": u_type, "desc": u_desc}
-                unit_meta_by_dest[dest_p] = meta
-                unit_meta_by_bname[os.path.basename(dest_p)] = meta
+                meta = {"unit": u_name, "type": u_type, "desc": (u_spec or {}).get("desc", "")}
+                unit_meta_by_dest[dest_p] = unit_meta_by_bname[os.path.basename(dest_p)] = meta
                 _add_with_parent(dest_p)
             except Exception:
                 pass
@@ -94,18 +94,14 @@ class PackageInspector:
         sb_root = self.engine.provider.sandbox_dir if getattr(self.engine.provider, "is_sandbox", False) else None
         for d_item in reg_pkg.get("dirs") or []:
             raw_d = d_item if isinstance(d_item, str) else (d_item.get("path") or d_item.get("dest") or "") if isinstance(d_item, dict) else ""
-            if not str(raw_d).strip():
-                continue
             res_d = str(raw_d).strip()
-            for mk, val in context_vars.items():
-                res_d = res_d.replace(mk, val)
-            if sb_root and os.path.isabs(res_d) and not res_d.startswith(sb_root):
-                res_d = os.path.join(sb_root, res_d.lstrip("/"))
+            if not res_d: continue
+            for mk, val in context_vars.items(): res_d = res_d.replace(mk, val)
+            if sb_root and os.path.isabs(res_d) and not res_d.startswith(sb_root): res_d = os.path.join(sb_root, res_d.lstrip("/"))
             res_d = os.path.normpath(res_d)
             d_desc = d_item.get("desc", "Директория пакета") if isinstance(d_item, dict) else "Директория пакета"
             unit_meta_by_dest.setdefault(res_d, {"unit": os.path.basename(res_d), "type": "dir", "desc": d_desc})
             _add_with_parent(res_d)
-
         return resolved_paths, unit_meta_by_dest, unit_meta_by_bname
 
     def get_package_info(self, pkg_query: str) -> Optional[Dict[str, Any]]:
@@ -128,29 +124,22 @@ class PackageInspector:
             if cat_info:
                 category_desc = cat_info.get("desc", "")
 
-        resolved_manifest_paths, unit_meta_by_dest, unit_meta_by_bname = (
-            self._collect_manifest_paths_and_meta(pkg_name, reg_pkg) if reg_pkg else ([], {}, {})
-        )
-
-        if state_entry:
-            combined_paths = list(dict.fromkeys(list(state_entry.get("files", [])) + resolved_manifest_paths))
-        else:
-            combined_paths = resolved_manifest_paths
-
-        detailed_files: List[Dict[str, Any]] = []
-        for fpath in combined_paths:
-            meta = unit_meta_by_dest.get(fpath) or unit_meta_by_bname.get(os.path.basename(fpath)) or {}
-            detailed_files.append({
-                "path": fpath,
-                "type": meta.get("type") or self._infer_file_type(fpath),
-                "desc": meta.get("desc", ""),
-                "exists": bool(os.path.exists(fpath) or os.path.islink(fpath)),
-            })
-
+        resolved_manifest_paths, unit_meta_by_dest, unit_meta_by_bname = self._collect_manifest_paths_and_meta(pkg_name, reg_pkg) if reg_pkg else ([], {}, {})
+        combined_paths = list(dict.fromkeys(list(state_entry.get("files", [])) + resolved_manifest_paths)) if state_entry else resolved_manifest_paths
+        detailed_files = [{
+            "path": fpath,
+            "type": (unit_meta_by_dest.get(fpath) or unit_meta_by_bname.get(os.path.basename(fpath)) or {}).get("type") or self._infer_file_type(fpath),
+            "desc": (unit_meta_by_dest.get(fpath) or unit_meta_by_bname.get(os.path.basename(fpath)) or {}).get("desc", ""),
+            "exists": bool(os.path.exists(fpath) or os.path.islink(fpath)),
+        } for fpath in combined_paths]
         mf_path = (reg_pkg.get("manifest_path") if reg_pkg else None) or (state_entry.get("manifest_path") if state_entry else "") or ""
+        avail_ver = str(reg_pkg.get("version", version)) if reg_pkg else version
+        upd_status = version_status(version if state_entry else None, avail_ver)
         return {
             "package": pkg_name, "namespace": namespace, "installed": state_entry is not None,
-            "version": version, "installed_at": self._format_date(state_entry) if state_entry else "не установлен",
+            "version": version, "available_version": avail_ver, "update_status": upd_status,
+            "version_history": list(state_entry.get("version_history", [])) if state_entry else [],
+            "installed_at": self._format_date(state_entry) if state_entry else "не установлен",
             "description": desc, "category": folder_path, "category_description": category_desc,
             "manifest_path": mf_path, "manifest_available": reg_pkg is not None,
             "is_external_manifest": bool(reg_pkg and reg_pkg.get("is_external_manifest")),
@@ -172,9 +161,16 @@ class PackageInspector:
         else:
             status_str = "✅ УСТАНОВЛЕН" if info["installed"] else "⚪ НЕ УСТАНОВЛЕН (показаны целевые пути)"
 
+        ver_line = f"v{info['version']}"
+        if info["installed"] and info.get("update_status") == "upgrade":
+            ver_line += f" -> v{info['available_version']} [доступно обновление]"
+        elif info["installed"] and info.get("update_status") == "downgrade":
+            ver_line += f" -> v{info['available_version']} [даунгрейд]"
+        elif info["installed"]:
+            ver_line += " [актуален]"
         lines = [
             f"📦 ПАКЕТ: {info['package']}", "=" * 70,
-            f"Статус:          {status_str}", f"Версия:          {info['version']}",
+            f"Статус:          {status_str}", f"Версия:          {ver_line}",
             f"Дата установки:  {info['installed_at']}", f"Описание:        {info['description'] or 'Нет описания'}",
         ]
         if info.get("manifest_path"):
@@ -197,9 +193,10 @@ class PackageInspector:
         installed = self.get_installed_list()
         if not installed:
             return "Нет установленных пакетов (состояние пусто или не инициализировано)."
-        lines = [f"{'ПАКЕТ':<20} | {'ВЕРСИЯ':<10} | {'ДАТА УСТАНОВКИ':<20} | {'ПУТЕЙ':<8} | ОПИСАНИЕ", "-" * 90]
+        lines = [f"{'ПАКЕТ':<20} | {'ВЕРСИЯ':<18} | {'ДАТА УСТАНОВКИ':<20} | {'ПУТЕЙ':<6} | ОПИСАНИЕ", "-" * 96]
         for item in installed:
-            lines.append(f"{item['package']:<20} | {item['version']:<10} | {item['installed_at']:<20} | {item['files_count']:<8} | {item.get('description', '')}")
+            v_str = f"{item['version']}→{item['available_version']}" if item.get("update_status") == "upgrade" else item["version"]
+            lines.append(f"{item['package']:<20} | {v_str:<18} | {item['installed_at']:<20} | {item['files_count']:<6} | {item.get('description', '')}")
         return "\n".join(lines)
 
     def to_json(self) -> str:

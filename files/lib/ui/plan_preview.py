@@ -46,8 +46,13 @@ class PlanPreviewLog(RichLog):
             if v and self.engine.registry.has(k) and self.engine.is_package_compatible(k) and (not filter_pkg or k == filter_pkg)
         }
 
-        if not plans["install"] and not plans["reinstall"] and not plans["uninstall"] and not backup_set and not restore_map:
-            self.write("[yellow]Используйте ПРОБЕЛ на пакетах, пункте бэкапа или архиве восстановления для планирования...[/yellow]")
+        unit_updates = {
+            k: sorted(u) for k, u in getattr(self.app_ref, "unit_actions", {}).items()
+            if u and self.engine.registry.has(k) and self.engine.is_package_compatible(k) and (not filter_pkg or k == filter_pkg)
+        }
+
+        if not plans["install"] and not plans["reinstall"] and not plans["uninstall"] and not backup_set and not restore_map and not unit_updates:
+            self.write("[yellow]Используйте ПРОБЕЛ на пакетах, отдельных юнитах, пункте бэкапа или архиве восстановления...[/yellow]")
             return
 
         import lib.config as config
@@ -65,6 +70,11 @@ class PlanPreviewLog(RichLog):
             self.write("[bold magenta]🔄 ПЛАН ВОССТАНОВЛЕНИЯ ИЗ БЭКАПА (ПОСЛЕ СОЗДАНИЯ БЭКАПОВ):[/bold magenta]")
             for pkg, arch in sorted(restore_map.items()):
                 self.write(f"  [✓] Пакет [bold]{pkg}[/bold]: восстановление из архива [bold]{arch}[/bold]")
+
+        if unit_updates:
+            self.write("[bold yellow]🔧 ПЛАН ТОЧЕЧНОГО ОБНОВЛЕНИЯ ЮНИТОВ (БЕЗ ХУКОВ post_install):[/bold yellow]")
+            for pkg, u_list in sorted(unit_updates.items()):
+                self.write(f"  [↻] Пакет [bold]{pkg}[/bold]: юниты {', '.join(u_list)}")
 
         if plans["uninstall"]:
             self.write("[bold red]🚨 ПЛАН УДАЛЕНИЯ ПАКЕТОВ (ЭТАП 1):[/bold red]")
@@ -134,6 +144,8 @@ class PlanPreviewLog(RichLog):
 
                     if f_type == "symlink":
                         self.write(f"      🔗 [Симлинк] {fname} ({desc}) -> {dest}")
+                    elif f_type == "web":
+                        self.write(f"      🌐 [Web]     {fname} ({desc}) -> {dest}")
                     elif f_type == "env":
                         preset = self.engine.env_manager.get_local_preset_path(pkg_name)
                         badge = " [bold yellow](предустановка env/)[/bold yellow]" if os.path.isfile(preset) else ""

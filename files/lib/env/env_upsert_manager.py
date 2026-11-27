@@ -1,13 +1,14 @@
 """
-Non-destructive ENV upsert manager supporting local presets in ./env/ without modifying package repos.
+Non-destructive ENV upsert manager supporting local presets in ./env/, comments, #GEN:...#, and safe #SKIP#.
 """
 import os
 import re
 import shutil
 import sys
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from lib.config import ENV_PATH, ENV_PREFIX, LOCAL_ENV_DIR
 from lib.core.execution_context import ExecutionContext
+from lib.env.env_generator import EnvGenerator
 from lib.env.env_parser import EnvParser
 from lib.env.secret_masker import SecretMasker
 from lib.installer.transaction_manager import TransactionManager
@@ -15,9 +16,8 @@ from lib.installer.transaction_manager import TransactionManager
 
 class EnvUpsertManager:
     """
-    Неразрушающее обновление переменных окружения (ENV upsert).
-    Поддерживает чтение и сохранение пользовательских предустановок в папке ./env/,
-    чтобы не изменять исходные файлы в репозитории пакетов и не задавать повторно вопросы.
+    Неразрушающее обновление переменных окружения (ENV upsert) с сохранением комментариев,
+    автоматической генерацией #GEN:...# и безопасным раскрытием #SKIP#.
     """
 
     def __init__(
@@ -51,40 +51,43 @@ class EnvUpsertManager:
             return False
 
     def needs_env_confirmation(self, pkg_name: str, template_path: str) -> bool:
-        """
-        Возвращает True, если перед установкой требуется обязательное подтверждение .env:
-        - пресет еще не сохранен во внутреннем хранилище (или задан --clean-env);
-        - либо в пресете остались незаполненные обязательные поля {{PROMPT:...}}.
-        """
+        """Возвращает True, если перед установкой требуется обязательное подтверждение .env."""
         if self.context.clean_env or not self.has_saved_preset(pkg_name):
             return True
         preset_path = self.get_local_preset_path(pkg_name)
         entries = self.parser.parse_editable_entries(template_path, override_paths=[preset_path])
         for entry in entries:
-            if entry.get("required_prompt") and not str(entry.get("value", "")).strip():
+            val = str(entry.get("value", "")).strip()
+            if entry.get("required_prompt") and not val and not EnvGenerator.is_skip_value(val):
                 return True
         return False
 
+    @staticmethod
+    def _atomic_write_0600(path: str, content: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+        os.chmod(path, 0o600)
+
     def save_local_preset(self, pkg_name: str, template_path: str, values: Dict[str, str]) -> str:
         """
-        Сохраняет отредактированные переменные во внутреннее хранилище (<LOCAL_ENV_DIR>/<pkg>.env),
-        не затрагивая исходный файл шаблона в репозитории пакетов.
+        Сохраняет отредактированные переменные в <LOCAL_ENV_DIR>/<pkg>.env,
+        сохраняя комментарии и разворачивая стандартные #GEN:...# (оставляя #SKIP# и #GEN:pkg:...#).
         """
         preset_path = self.get_local_preset_path(pkg_name)
-        os.makedirs(os.path.dirname(preset_path), exist_ok=True)
-        rendered = self.parser.render_with_values(template_path, values)
-        with open(preset_path, "w", encoding="utf-8") as f:
-            f.write(rendered)
-        os.chmod(preset_path, 0o600)
+        existing = preset_path if os.path.isfile(preset_path) else None
+        rendered = self.parser.render_with_values(template_path, values, existing_path=existing)
+        materialized, _ = EnvGenerator.materialize_env_text(rendered, for_system=False)
+        self._atomic_write_0600(preset_path, materialized)
         return preset_path
 
     def apply_preset_to_system_env(
         self, pkg_name: str, template_path: str, dest_path: str, values: Dict[str, str]
     ) -> Tuple[str, Optional[str]]:
-        """
-        Сохраняет пресет во внутреннее хранилище и применяет его в системный .env с бэкапом .de_bak.
-        Исходный файл в репозитории не изменяется. При PermissionError возвращает мягкое предупреждение.
-        """
+        """Сохраняет пресет во внутреннее хранилище и применяет его в системный .env с бэкапом .de_bak."""
         preset_path = self.save_local_preset(pkg_name, template_path, values)
         try:
             dest_dir = os.path.dirname(dest_path)
@@ -93,10 +96,9 @@ class EnvUpsertManager:
             if os.path.isfile(dest_path):
                 shutil.copy2(dest_path, f"{dest_path}.de_bak")
             with open(preset_path, "r", encoding="utf-8") as src_f:
-                content = src_f.read()
-            with open(dest_path, "w", encoding="utf-8") as dst_f:
-                dst_f.write(content)
-            os.chmod(dest_path, 0o600)
+                preset_content = src_f.read()
+            sys_content, _ = EnvGenerator.materialize_env_text(preset_content, for_system=True)
+            self._atomic_write_0600(dest_path, sys_content)
             return preset_path, None
         except PermissionError:
             warn = (
@@ -120,9 +122,10 @@ class EnvUpsertManager:
 
     def upsert_env_file(self, src_path: str, dest_path: str, pkg_name: Optional[str] = None) -> bool:
         """
-        Обновляет целевой .env:
-        - Если в ./env/<pkg>.env есть сохраненная предустановка, берет значения из нее без опроса пользователя.
-        - Если целевой файл существует и clean_env=False, дописывает только новые переменные.
+        Обновляет целевой .env неразрушающим образом:
+        - переносит комментарии над новыми ключами;
+        - разворачивает #GEN:...# (кроме #GEN:pkg:...#);
+        - безопасно раскрывает #SKIP# в пустое значение с меткой '# #SKIP#' в системном .env.
         """
         dest_dir = os.path.dirname(dest_path)
         inferred_pkg = pkg_name or self._infer_pkg_name_from_dest(dest_path)
@@ -161,11 +164,11 @@ class EnvUpsertManager:
                 content = f.read()
 
             content, prompted = self._resolve_prompts_with_flag(content)
-            if prompted and inferred_pkg and preset_path:
-                os.makedirs(os.path.dirname(preset_path), exist_ok=True)
-                with open(preset_path, "w", encoding="utf-8") as pf:
-                    pf.write(content)
-                os.chmod(preset_path, 0o600)
+            preset_content, gen_keys = EnvGenerator.materialize_env_text(content, for_system=False)
+            if (prompted or gen_keys) and inferred_pkg and preset_path:
+                self._atomic_write_0600(preset_path, preset_content)
+
+            sys_content, _ = EnvGenerator.materialize_env_text(preset_content, for_system=True)
 
             if os.path.exists(dest_path):
                 backup_path = f"{dest_path}.de_bak"
@@ -174,33 +177,38 @@ class EnvUpsertManager:
             else:
                 self.transaction_manager.record_created_file(dest_path)
 
-            with open(dest_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            os.chmod(dest_path, 0o600)
-            self.context.log(f"🔐 Сконфигурирован ENV файл: {dest_path}")
+            self._atomic_write_0600(dest_path, sys_content)
+            gen_note = f" (сгенерированы ключи: {', '.join(gen_keys)})" if gen_keys else ""
+            self.context.log(f"🔐 Сконфигурирован ENV файл: {dest_path}{gen_note}")
             return True
 
         existing_keys, _ = self.parser.parse_file(dest_path)
-        new_lines_to_append = []
+        new_blocks: List[str] = []
+        added_count = 0
 
         for item in src_lines:
             if item["type"] == "pair":
                 k = item["key"]
                 if k not in existing_keys:
                     resolved_raw = self._resolve_prompts(item["raw"])
-                    new_lines_to_append.append(resolved_raw)
+                    mat_line, _ = EnvGenerator.materialize_env_text(resolved_raw, for_system=True)
+                    leading = item.get("leading_comments") or []
+                    if leading:
+                        new_blocks.extend(leading)
+                    new_blocks.append(mat_line.rstrip("\n"))
+                    added_count += 1
 
-        if new_lines_to_append:
+        if added_count > 0:
             backup_path = f"{dest_path}.de_bak"
             shutil.copy2(dest_path, backup_path)
             self.transaction_manager.record_backup(dest_path, backup_path)
 
             with open(dest_path, "a", encoding="utf-8") as f:
                 f.write("\n\n# --- Added by Deploy Engine update ---\n")
-                for line in new_lines_to_append:
+                for line in new_blocks:
                     f.write(f"{line}\n")
             os.chmod(dest_path, 0o600)
-            self.context.log(f"🔄 В ENV {dest_path} добавлены новые переменные ({len(new_lines_to_append)} шт.)")
+            self.context.log(f"🔄 В ENV {dest_path} добавлены новые переменные ({added_count} шт.)")
         else:
             self.context.log(f"🔒 ENV {dest_path} актуален, существующие секреты не затронуты.")
 
@@ -232,10 +240,7 @@ class EnvUpsertManager:
             self.context.log(f"🔒 Каталог окружения сохранен: {env_dir} (для удаления используйте --purge)")
 
     def _resolve_prompts_with_flag(self, text: str) -> tuple[str, bool]:
-        """
-        Разрешает макросы {{PROMPT:...}}.
-        Интерактивно опрашивает через /dev/tty только те промпты, у которых НЕТ значения по умолчанию.
-        """
+        """Разрешает макросы {{PROMPT:...}}, опрашивая через /dev/tty только поля без дефолта."""
         pattern = re.compile(r"\{\{PROMPT:(.*?)\}\}")
         if not pattern.search(text):
             return text, False
@@ -262,11 +267,10 @@ class EnvUpsertManager:
                     if default_val.startswith("default="):
                         default_val = default_val[len("default=") :].strip()
 
-            # Запрашиваем интерактивно только если дефолтного значения нет
             if is_interactive and default_val == "":
                 print(f"\n💬 [ОБЯЗАТЕЛЬНЫЙ ПАРАМЕТР]: {notice}")
                 try:
-                    sys.stdout.write("👉 Введите значение: ")
+                    sys.stdout.write("👉 Введите значение (или #SKIP# для пропуска): ")
                     sys.stdout.flush()
                     with open("/dev/tty", "r", encoding="utf-8") as tty:
                         line = tty.readline()

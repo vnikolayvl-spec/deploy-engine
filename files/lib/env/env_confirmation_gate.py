@@ -8,6 +8,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from lib.core.deploy_engine_error import DeployEngineError
 from lib.env.env_config_editor import EnvConfigEditor
+from lib.env.env_generator import EnvGenerator
 
 
 class EnvConfirmationGate:
@@ -85,7 +86,9 @@ class EnvConfirmationGate:
             pkg_missing = [
                 (entry["key"], str(entry.get("notice") or "").strip())
                 for entry in entries
-                if entry.get("required_prompt") and not str(entry.get("value", "")).strip()
+                if entry.get("required_prompt")
+                and not str(entry.get("value", "")).strip()
+                and not EnvGenerator.is_skip_value(entry.get("value", ""))
             ]
             if pkg_missing:
                 missing.append((canonical_name, pkg_missing))
@@ -143,13 +146,15 @@ class EnvConfirmationGate:
                 val = str(entry.get("value", "")).strip()
                 req = bool(entry.get("required_prompt"))
                 is_auto = bool(entry.get("is_auto"))
+                is_skip = bool(entry.get("is_skip"))
+                is_gen = bool(entry.get("is_gen"))
                 notice = entry.get("notice") or ""
                 if req and not val:
                     while not val:
                         hint = f" ({notice})" if notice else ""
-                        val = input_fn(f"   ❗ [ОБЯЗАТЕЛЬНО] {key}{hint}: ").strip()
+                        val = input_fn(f"   ❗ [ОБЯЗАТЕЛЬНО] {key}{hint} (или #SKIP#): ").strip()
                 else:
-                    tag = " [АВТО]" if is_auto else ""
+                    tag = " [АВТО]" if is_auto else (" [ПРОПУЩЕНО]" if is_skip else (" [ГЕНЕРАЦИЯ]" if is_gen else ""))
                     shown = val if val else '""'
                     engine.context.log(f"   • {key}{tag} = {shown}")
                 values[key] = val

@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 from lib.config import DATA_PREFIX, DEFAULT_PACKAGES_DIR, ENV_PREFIX, PACKAGES_CACHE_FILE, PACKAGES_DIR
 from lib.core.deploy_engine_error import DeployEngineError
 from lib.core.execution_context import ExecutionContext
+from lib.core.upgrade_manager import UpgradeManager
+from lib.core.version_utils import check_min_engine_version
 from lib.dependencies.dependency_graph import DependencyGraph
 from lib.dependencies.node_pkg_manager import NodePackageManager
 from lib.dependencies.python_pkg_manager import PythonPackageManager
@@ -16,6 +18,7 @@ from lib.discovery.target_validator import TargetValidator
 from lib.env.env_confirmation_gate import EnvConfirmationGate
 from lib.env.env_upsert_manager import EnvUpsertManager
 from lib.installer.file_installer import FileInstaller
+from lib.installer.selective_unit_runner import SelectiveUnitRunner
 from lib.installer.transaction_manager import TransactionManager
 from lib.installer.unit_path_resolver import UnitPathResolver
 from lib.lifecycle.hook_executor import HookExecutor
@@ -54,7 +57,6 @@ class Engine:
 
     @property
     def packages(self) -> Dict[str, Dict[str, Any]]: return self.registry.packages
-
     @property
     def folders(self) -> Dict[str, Dict[str, Any]]: return self.registry.folders
 
@@ -140,9 +142,10 @@ class Engine:
             pkg = self.registry.get(pkg_name)
             if not self.is_package_compatible(pkg):
                 raise DeployEngineError(f"Пакет '{pkg['name']}' не поддерживает текущую систему ({self.provider.distro_id}). Поддерживаемые платформы: {', '.join(pkg.get('platforms') or [])}")
+            ok_ver, ver_err = check_min_engine_version(pkg)
+            if not ok_ver: raise DeployEngineError(ver_err)
         self.context.log(f"📋 Порядок установки пакетов: {' -> '.join(ordered_packages)}")
-        if not EnvConfirmationGate.confirm_in_cli(self, ordered_packages):
-            return False
+        if not EnvConfirmationGate.confirm_in_cli(self, ordered_packages): return False
         all_sys_pkgs: List[str] = []
         for pkg_name in ordered_packages:
             all_sys_pkgs.extend(self.sys_manager.resolve_for_platform(self.registry.get(pkg_name).get("sys_packages", [])))
@@ -170,13 +173,11 @@ class Engine:
         data_dir_existed = os.path.exists(data_pkg_dir)
 
         with self.context.package_operation_log(data_pkg_dir, canonical_name, getattr(self, "_current_op", "install")) as op_log:
-            if op_log and not data_dir_existed:
-                self.txn.record_created_dir(data_pkg_dir)
+            if op_log and not data_dir_existed: self.txn.record_created_dir(data_pkg_dir)
             self.context.log(f"\n🚀 Развертывание пакета: {canonical_name} (версия {pkg.get('version', '1.0.0')})")
             if pkg.get("python_packages"): self.py_manager.install(pkg["python_packages"], base_dir)
             if pkg.get("node_packages"): self.node_manager.install(pkg["node_packages"], base_dir)
             if pkg.get("pre_install"): self.hook_executor.run_hook("pre_install", pkg["pre_install"], canonical_name, base_dir)
-
             context_vars = {
                 "{{ROOT_DIR}}": os.path.dirname(base_dir), "{{BASE_DIR}}": base_dir, "{{SYS_BIN}}": paths["sys_bin"],
                 "{{SYS_SYSTEMD}}": paths["sys_systemd"], "{{ENV_PATH}}": paths["env_path"], "{{STATE_DIR}}": paths["state_dir"],
@@ -187,14 +188,13 @@ class Engine:
             def _track_path(p: str, u_type: str) -> None:
                 for parent_dir in (opt_pkg_dir, env_pkg_dir, data_pkg_dir):
                     if p.startswith(parent_dir + os.sep) and parent_dir not in installed_files:
-                        installed_files.append(parent_dir)
-                        self.deployed_files_map[parent_dir] = "dir"
-                if p not in installed_files:
-                    installed_files.append(p)
+                        installed_files.append(parent_dir); self.deployed_files_map[parent_dir] = "dir"
+                if p not in installed_files: installed_files.append(p)
                 self.deployed_files_map[p] = u_type
 
             for unit_name, unit_spec in pkg.get("units", {}).items():
                 src_path, dest_path, mode, unit_type = self.path_resolver.resolve(canonical_name, unit_name, unit_spec, base_dir)
+                if unit_type == "web": SelectiveUnitRunner.validate_web_unit(canonical_name, src_path, self.context)
                 if unit_type == "env":
                     self.env_manager.upsert_env_file(src_path, dest_path, pkg_name=canonical_name)
                     static_env_vars.update(SystemdToPlistConverter.parse_env_file(dest_path if os.path.isfile(dest_path) else src_path))
@@ -210,13 +210,10 @@ class Engine:
                     self.file_installer.install_file(src_path, dest_path, mode, unit_type, symlink_target, context_vars=context_vars)
                     _track_path(dest_path, unit_type)
 
-            for d_path in self.file_installer.apply_declarative_dirs_and_chmod(pkg.get("dirs", []), pkg.get("chmod", []), context_vars):
-                _track_path(d_path, "dir")
+            for d_path in self.file_installer.apply_declarative_dirs_and_chmod(pkg.get("dirs", []), pkg.get("chmod", []), context_vars): _track_path(d_path, "dir")
             if self.provider.uses_launchd_plist() and (service_units or timer_units):
-                for p_path in self.file_installer.install_launchd_plists(canonical_name, service_units, timer_units, static_env_vars, context_vars):
-                    _track_path(p_path, "plist")
-            if pkg.get("post_install"):
-                self.hook_executor.run_hook("post_install", pkg["post_install"], canonical_name, base_dir)
+                for p_path in self.file_installer.install_launchd_plists(canonical_name, service_units, timer_units, static_env_vars, context_vars): _track_path(p_path, "plist")
+            if pkg.get("post_install"): self.hook_executor.run_hook("post_install", pkg["post_install"], canonical_name, base_dir)
             mf_path = pkg.get("manifest_path") or os.path.join(base_dir, "manifest.json")
             self.state_repo.mark_installed(canonical_name, pkg.get("version", "1.0.0"), installed_files, pkg.get("namespace"), desc=pkg.get("desc", ""), manifest_path=mf_path)
 
@@ -243,14 +240,11 @@ class Engine:
         if not canonical_name or "/" in canonical_name or "*" in canonical_name or canonical_name in (".", ".."):
             raise DeployEngineError(f"Некорректное каноническое имя пакета для удаления: '{canonical_name}'")
 
-        paths = self.provider.get_paths()
-        state_entry = self.state_repo.get_installed_package(canonical_name)
+        paths, state_entry = self.provider.get_paths(), self.state_repo.get_installed_package(canonical_name)
         raw_files = list(state_entry.get("files", []) if state_entry else [])
         for u_name, u_spec in (pkg_info.get("units", {}) if pkg_info else {}).items():
             _, dest, _, _ = self.path_resolver.resolve(canonical_name, u_name, u_spec, base_dir)
-            if dest and dest not in raw_files:
-                raw_files.append(dest)
-
+            if dest and dest not in raw_files: raw_files.append(dest)
         files_to_remove = list(dict.fromkeys([str(f).strip() for f in raw_files if f and str(f).strip()]))
         if not state_entry and not pkg_info and not files_to_remove:
             self.context.log(f"\n🧹 Удаление пакета: {canonical_name}\n{self.target_validator.format_missing_warning(canonical_name)}")
@@ -288,11 +282,12 @@ class Engine:
         try: return self.install_packages([pkg_name])
         finally: self._current_op = "install"
 
+    def upgrade_packages(self, targets: Optional[List[str]] = None) -> List[Dict[str, Any]]: return UpgradeManager(self).upgrade_packages(targets=targets)
+    def update_units(self, pkg_name: str, unit_names: Optional[List[str]] = None, unit_type: Optional[str] = None, with_hooks: bool = False) -> bool: return SelectiveUnitRunner.update_package_units(self, pkg_name, unit_names=unit_names, unit_type_filter=unit_type, with_hooks=with_hooks)
     def backup_packages(self, targets: List[str], comment: str = "") -> List[Dict[str, Any]]:
         resolved = self.backup_manager.resolve_targets(targets, for_restore=False)
         if not resolved: raise DeployEngineError("Не найдено установленных пакетов с данными или .env для резервного копирования.")
         return [self.backup_manager.create_backup(pkg, comment=comment) for pkg in resolved]
-
     def restore_packages(self, targets: List[str], selector: Optional[str] = None) -> List[Dict[str, Any]]:
         resolved = self.backup_manager.resolve_targets(targets, for_restore=True)
         if not resolved: raise DeployEngineError("Не найдено пакетов с доступными бэкапами для восстановления.")

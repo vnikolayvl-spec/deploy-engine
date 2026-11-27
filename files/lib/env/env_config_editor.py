@@ -12,7 +12,7 @@ from typing import List, Optional, Tuple
 class EnvConfigEditor:
     """Открывает системный .env или пресет из внутреннего хранилища в дефолтном редакторе ОС."""
 
-    EDITOR_FALLBACKS = ("nano", "vim", "vi")
+    EDITOR_FALLBACKS = ("vim", "vi", "nano")
 
     def __init__(self, engine, runner=None):
         self.engine = engine
@@ -20,7 +20,7 @@ class EnvConfigEditor:
 
     @classmethod
     def resolve_editor_command(cls) -> Optional[List[str]]:
-        """Определяет команду системного редактора ($VISUAL -> $EDITOR -> nano -> vim -> vi)."""
+        """Определяет команду системного редактора ($VISUAL -> $EDITOR -> vim -> vi -> nano)."""
         for env_var in ("VISUAL", "EDITOR"):
             raw = (os.environ.get(env_var) or "").strip()
             if raw:

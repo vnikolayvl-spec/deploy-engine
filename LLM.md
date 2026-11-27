@@ -1,4 +1,4 @@
-# 🤖 Deploy Engine (версия 9.1.1) — Техническая спецификация для LLM
+# 🤖 Deploy Engine (версия 3.0.0) — Техническая спецификация для LLM
 
 Данный документ описывает архитектуру, модульную структуру, правила разработки, ключи CLI и переменные окружения `deploy-engine` для языковых моделей и разработчиков.
 
@@ -25,7 +25,7 @@
 deploy-engine/
 ├── manifest.json              # Манифест для самоустановки движка в /opt/de_deploy-engine
 ├── deploy.env                 # Шаблон системной конфигурации (/etc/default/de_deploy-engine/deploy-engine.env)
-├── VERSION.txt                # Номер версии (9.1.1)
+├── VERSION.txt                # Номер версии (3.0.0)
 ├── COMMIT.txt                 # Описание текущего релиза
 ├── CHANGELOG.txt              # История изменений по версиям
 ├── README.md                  # Пользовательская документация с описанием всех ключей и ENV
@@ -40,10 +40,13 @@ deploy-engine/
     └── lib/
         ├── config.py          # Иерархический загрузчик конфигурации и путей
         ├── engine.py          # Реэкспорт фасада Engine
-        ├── ui_app.py          # Главный 3-колоночный экран TUI (DeployApp)
+        ├── ui_app.py          # Главный 3-колоночный экран TUI (DeployApp, заголовок с версией и unit_actions)
         ├── utils.py           # Проверка прав root, авторазвертывание .venv для Textual и маппинг хоткеев
         ├── core/
         │   ├── engine.py                    # Главный фасад оркестратора (Engine)
+        │   ├── cli_dispatcher.py            # Диспетчер CLI-команд (version, upgrade, config --show, точечные юниты)
+        │   ├── version_utils.py             # SemVer-утилиты, проверка ограничений requires и min_engine_version
+        │   ├── upgrade_manager.py           # Менеджер SemVer-обновлений (upgrade [pkg|all]) с автобэкапом
         │   ├── execution_context.py         # Контекст выполнения, потоковый запуск процессов, статусы пакетов и фазы активности
         │   ├── completion_provider.py       # Генератор подсказок автодополнения (commands|packages|installed) для Zsh/Bash
         │   ├── deploy_engine_error.py       # Базовое исключение DeployEngineError
@@ -72,30 +75,34 @@ deploy-engine/
         │   ├── provider_factory.py          # Фабрика провайдеров окружения
         │   └── systemd_to_plist_converter.py# Конвертер .service + .timer + .env -> launchd XML .plist
         ├── installer/
-        │   ├── unit_path_resolver.py        # Расчет системных путей и прав доступа по типам юнитов
+        │   ├── unit_path_resolver.py        # Расчет системных путей и прав доступа (включая нативный тип web)
+        │   ├── selective_unit_runner.py     # Точечное обновление юнитов (<pkg>:<unit>, --only, --unit-type, проверка web.json)
         │   ├── data_unit_installer.py       # Установка постоянных данных (/var/lib/de_<pkg>) без перезаписи
         │   ├── transaction_manager.py       # Журнал транзакций с атомарным LIFO-откатом
         │   └── file_installer.py            # Копирование файлов/директорий, симлинки, декларативные dirs/chmod и xattr macOS
         ├── env/
-        │   ├── env_parser.py                # Парсер .env с сохранением комментариев, #AUTO# и разбором {{PROMPT:...}}
-        │   ├── secret_masker.py             # Маскирование секретов в логах
-        │   ├── env_upsert_manager.py        # Неразрушающий upsert .env, внутреннее хранилище пресетов и apply в системный .env
-        │   ├── env_config_editor.py         # Команда deploy-engine config <pkg> [--preset] для дефолтного редактора ОС
-        │   └── env_confirmation_gate.py     # Барьер обязательного подтверждения .env до установки пакетов без пресета
+        │   ├── env_generator.py             # Генератор #GEN:...# и безопасное раскрытие #SKIP#
+        │   ├── env_parser.py                # Парсер .env с сохранением комментариев, инлайн-комментариев, #AUTO#, #GEN#, #SKIP#
+        │   ├── env_inspector.py             # Команда config <pkg> --show [--json] [--reveal]
+        │   ├── secret_masker.py             # Маскирование секретов в логах и таблицах
+        │   ├── env_upsert_manager.py        # Неразрушающий upsert .env с переносом комментариев, пресетами и генерацией #GEN#
+        │   ├── env_config_editor.py         # Команда deploy-engine config <pkg> [--preset] (vim -> vi -> nano)
+        │   └── env_confirmation_gate.py     # Барьер обязательного подтверждения .env до установки (с поддержкой #SKIP#)
         ├── lifecycle/
         │   ├── hook_context.py              # Интерполяция макросов ({{SYS_BIN}}, {{ENV_DIR}}, {{DATA_DIR}}, {{OPT_DIR}})
         │   └── hook_executor.py             # Выполнение хуков с блокировкой rm в манифестах
         ├── state/
-        │   ├── state_repository.py          # Управление state.json (с сохранением manifest_path)
-        │   ├── package_inspector.py         # Инспекция пакетов (list, info, статус служб, логи install_DATE.log)
+        │   ├── state_repository.py          # Управление state.json (с manifest_path и version_history)
+        │   ├── package_inspector.py         # Инспекция пакетов (list, info, SemVer-статусы, логи install_DATE.log)
         │   └── backup_manager.py            # Версионированные бэкапы и восстановление (backup / restore)
         ├── remote/
         │   ├── ssh_client.py                # Выполнение команд и передача файлов через ssh/scp
         │   └── remote_deployer.py           # Двухуровневый удаленный деплой (Полный и Сокращенный режимы, Remote TUI)
         └── ui/
             ├── activity_indicator.py        # Неблокирующий Брайль-спиннер, счетчик [MM:SS] и метки времени [HH:MM:SS]
-            ├── plan_executor.py             # Построение порядка вкладок и синхронное выполнение плана TUI
-            ├── package_tree.py              # Дерево пакетов, бэкапов и архивов восстановления
+            ├── tree_state_keeper.py         # Сохранение и восстановление раскрытых веток, курсора и скролла дерева TUI
+            ├── plan_executor.py             # Построение порядка вкладок и выполнение плана (включая __unit_updates__)
+            ├── package_tree.py              # Дерево пакетов, бэкапов, web-юнитов, SemVer-бейджей и выбора юнитов
             ├── plan_preview.py              # Виджет предпросмотра плана развертывания
             ├── env_editor_modal.py          # Компактное модальное окно редактирования .env [E] (пресет / применить в системный)
             ├── package_env_panel.py         # Встроенная панель обязательного подтверждения .env на вкладке пакета
@@ -109,10 +116,16 @@ deploy-engine/
 ## 🔑 Ключи запуска (`main.py`) и переменные ENV
 
 ### Ключи командной строки
-- **Позиционные аргументы (`pos_args`)**: команда (`install`, `uninstall`, `reinstall`, `config`, `backup`, `restore`, `list`, `info`, `completion`, `scan`, `tui`, `help`) и/или имена целевых пакетов (или путь к папке/манифесту).
+- **Позиционные аргументы (`pos_args`)**: команда (`install`, `uninstall`, `reinstall`, `upgrade`, `config`, `backup`, `restore`, `list`, `info`, `completion`, `scan`, `tui`, `version`, `help`) и цели (`<pkg>` или `<pkg>:<unit>`).
+- **`--version`, `-V`**: вывод текущей версии Deploy Engine (`v3.0.0`).
 - **`--tui`, `-u`**: принудительный запуск TUI.
 - **`--info`, `-i [ПАКЕТ]`**: вывод подробной карточки пакета в CLI.
-- **`--preset`**: открыть пресет из внутреннего хранилища вместо системного `.env` (для команды `config`).
+- **`--preset`**: открыть/показать пресет из внутреннего хранилища вместо системного `.env` (для команды `config`).
+- **`--show`**: показать таблицу или JSON развернутых значений `.env` с учетом `#AUTO#` и источников (для `config`).
+- **`--reveal`**: показать секреты без маскирования (вместе с `config --show`).
+- **`--only <u1,u2>`**: точечное обновление выбранных юнитов через запятую.
+- **`--unit-type <ТИП>`**: точечное обновление юнитов указанного типа (`web`, `file`, `script`, `unit`, `env`, `data`, `symlink`).
+- **`--with-hooks`**: запускать `post_install` хуки также при точечном обновлении отдельных юнитов.
 - **`--manifest`, `-m <ПУТЬ>`**: путь к `manifest.json` или папке пакетов.
 - **`--packages-dir`, `-d <ПУТЬ>`**: корневая директория дерева пакетов.
 - **`--comment`, `-c <ТЕКСТ>`**: комментарий к бэкапу (`backup`).
@@ -127,7 +140,7 @@ deploy-engine/
 - **`--remote`, `-r [user@]host[:port]`**: удаленное выполнение по SSH.
 - **`--remote-dir <ПУТЬ>`**: каталог `deploy-engine` на удаленном сервере (по умолчанию `/opt/de_deploy-engine`).
 - **`--config <ФАЙЛ>`**: путь к кастомному `.env` файлу движка.
-- **`--yes`, `-y`**: неинтерактивный режим CLI без запросов `/dev/tty` (останавливает установку при незаполненных обязательных `{{PROMPT:...}}` без дефолта).
+- **`--yes`, `-y`**: неинтерактивный режим CLI без запросов `/dev/tty` (останавливает установку при незаполненных обязательных `{{PROMPT:...}}` без дефолта; `#SKIP#` считается явным пропуском).
 - **`--json`**: вывод в формате JSON.
 - **`--verbose`, `-v`**: подробный отладочный вывод.
 

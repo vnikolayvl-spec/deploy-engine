@@ -79,6 +79,7 @@ class StateRepository:
             "namespace": str(raw_entry.get("namespace") or pkg_key),
             "desc": str(raw_entry.get("desc") or raw_entry.get("description") or ""),
             "manifest_path": str(raw_entry.get("manifest_path") or ""),
+            "version_history": list(raw_entry.get("version_history", [])) if isinstance(raw_entry.get("version_history"), list) else [],
         }
 
     def _read_single_state_file(self, filepath: str) -> Dict[str, Dict[str, Any]]:
@@ -117,6 +118,9 @@ class StateRepository:
             for odir in ("/opt", os.path.join(home, ".local", "opt")):
                 base_f = os.path.join(odir, f"de_{pkg_name}", "files")
                 candidates.append(base_f if clean_u == "files" else os.path.join(base_f, clean_u))
+        elif u_type == "web":
+            for odir in ("/opt", os.path.join(home, ".local", "opt")):
+                candidates.append(os.path.join(odir, f"de_{pkg_name}", "web"))
         elif u_type == "env":
             for edir in ("/etc/default", os.path.join(home, ".config", "deploy-engine", "default")):
                 candidates.append(os.path.join(edir, f"{ENV_PREFIX}{pkg_name}", bname))
@@ -161,7 +165,7 @@ class StateRepository:
                 except Exception:
                     continue
 
-                is_primary = u_type in ("script", "symlink", "file", "unit", "service", "timer")
+                is_primary = u_type in ("script", "symlink", "file", "web", "unit", "service", "timer")
                 if is_primary:
                     primary_total += 1
 
@@ -233,15 +237,22 @@ class StateRepository:
         desc: str = "",
         manifest_path: str = "",
     ) -> None:
-        """Регистрирует пакет как установленный (с сохранением пути к manifest.json)."""
+        """Регистрирует пакет как установленный (с сохранением пути к manifest.json и истории версий)."""
         current = self._read_single_state_file(self.state_file_path)
+        prev = current.get(pkg_name) or {}
+        history = list(prev.get("version_history") or [])
+        now_ts = time.time()
+        prev_ver = prev.get("version")
+        action = "install" if not prev_ver else ("reinstall" if prev_ver == version else "upgrade")
+        history.append({"version": version, "installed_at": now_ts, "action": action})
         current[pkg_name] = {
             "version": version,
-            "installed_at": time.time(),
+            "installed_at": now_ts,
             "files": list(dict.fromkeys(files)),
             "namespace": namespace or pkg_name,
             "desc": desc,
             "manifest_path": str(manifest_path or ""),
+            "version_history": history[-20:],
         }
         self.save_state({"installed": current})
 

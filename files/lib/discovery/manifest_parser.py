@@ -5,6 +5,7 @@ import json
 import os
 from typing import Any, Dict
 from lib.core.manifest_validation_error import ManifestValidationError
+from lib.core.version_utils import parse_requirement
 from lib.discovery.category_manifest_parser import CategoryManifestParser
 
 
@@ -90,7 +91,7 @@ class ManifestParser:
                     not pkg_units
                     and reqs
                     and len(all_pkg_names) > 1
-                    and all(r in all_pkg_names for r in reqs)
+                    and all(parse_requirement(r)[0] in all_pkg_names for r in reqs)
                 )
 
                 normalized_multi["packages"][pkg_name] = self._normalize_single_package(pkg_data, base_dir)
@@ -126,6 +127,14 @@ class ManifestParser:
         else:
             sys_packages = []
 
+        raw_after = data.get("after", [])
+        if isinstance(raw_after, str):
+            after_list = [p.strip() for p in raw_after.split(",") if p.strip()]
+        elif isinstance(raw_after, list):
+            after_list = [str(p).strip() for p in raw_after if str(p).strip()]
+        else:
+            after_list = []
+
         normalized: Dict[str, Any] = {
             "type": "package",
             "is_category": False,
@@ -136,9 +145,11 @@ class ManifestParser:
             "platforms": platforms,
             "name": name,
             "version": str(data.get("version", "1.0.0")),
+            "min_engine_version": str(data.get("min_engine_version") or "").strip(),
             "description": desc,
             "desc": desc,
             "requires": list(data.get("requires", [])),
+            "after": after_list,
             "sys_packages": sys_packages,
             "python_packages": list(data.get("python_packages", [])),
             "node_packages": list(data.get("node_packages", [])),

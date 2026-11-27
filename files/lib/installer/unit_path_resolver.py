@@ -66,6 +66,8 @@ class UnitPathResolver:
                 unit_type = "unit"
             elif clean_name.endswith(".env") or clean_name == "deploy.env":
                 unit_type = "env"
+            elif clean_name == "web":
+                unit_type = "web"
             else:
                 unit_type = "file"
 
@@ -171,6 +173,10 @@ class UnitPathResolver:
 
         elif unit_type == "dir":
             default_dest = os.path.join(state_dir, f"{DATA_PREFIX}{pkg_name}", clean_name)
+            default_mode = 0o755
+
+        elif unit_type == "web":
+            default_dest = os.path.join(opt_dir, f"de_{pkg_name}", "web")
             default_mode = 0o755
 
         elif unit_type == "file":
