@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "id": "deploy-engine",
+  "name": "Deploy Engine",
+  "description": "Оркестратор инфраструктуры: дерево пакетов и юнитов, планировщик зависимостей, .env-инспектор, бэкапы, Sandbox/Dry-Run и фоновое выполнение с live-логами",
+  "icon": "Boxes",
+  "category": "core",
+  "order": 10,
+  "system": {
+    "service_name": null,
+    "env_file": "/etc/default/de_deploy-engine/deploy-engine.env",
+    "status_argv": ["deploy-engine", "--version"],
+    "logs_unit": null,
+    "cli_command": "deploy-engine"
+  },
+  "acl": {
+    "permissions": {
+      "view": "Открывать веб-консоль Deploy Engine и просматривать каталог пакетов",
+      "plan.execute": "Выполнять планы установки, переустановки, удаления и обновления юнитов на хосте",
+      "sandbox.run": "Запускать планы в изолированном режиме Sandbox или симуляции Dry-Run",
+      "env.read": "Просматривать конфигурацию .env пакетов (с маскированием секретов)",
+      "env.write": "Редактировать и сохранять пресеты .env пакетов",
+      "env.reveal": "Просматривать секретные значения .env без маскирования (--reveal)",
+      "service.control": "Перезапускать системные службы управляемых пакетов",
+      "backup.manage": "Создавать и восстанавливать резервные копии пакетов",
+      "repo.sync": "Обновлять базу пакетов deploy-packages (git pull + scan)",
+      "jobs.cancel": "Останавливать выполняющиеся фоновые задачи (SIGINT -> LIFO-откат)",
+      "logs.read": "Просматривать журналы установки, логи служб и историю запусков"
+    },
+    "role_defaults": {
+      "admin": ["*"],
+      "operator": ["view", "sandbox.run", "env.read", "logs.read"],
+      "user": []
+    }
+  },
+  "actions": [
+    {
+      "id": "version",
+      "label": "Версия движка",
+      "argv": ["deploy-engine", "--version"],
+      "permission": "view",
+      "variant": "secondary"
+    },
+    {
+      "id": "rescan",
+      "label": "Пересканировать пакеты",
+      "argv": ["deploy-engine", "scan"],
+      "permission": "repo.sync",
+      "variant": "secondary"
+    }
+  ],
+  "backend": {
+    "mode": "script",
+    "entry": "api.py",
+    "timeout_ms": 25000,
+    "routes": {
+      "get_state": { "permission": "view", "response": "json" },
+      "preview_plan": { "permission": "view", "response": "json" },
+      "get_package_details": { "permission": "view", "response": "json" },
+      "get_package_logs": { "permission": "logs.read", "response": "json" },
+      "restart_service": { "permission": "service.control", "response": "json" },
+      "inspect_env": { "permission": "env.read", "response": "json" },
+      "get_env_form": { "permission": "env.read", "response": "json" },
+      "save_env_preset": { "permission": "env.write", "response": "json" },
+      "sync_packages": { "permission": "repo.sync", "response": "json" },
+      "start_job": { "permission": "view", "response": "json" },
+      "get_job_status": { "permission": "logs.read", "response": "json" },
+      "list_jobs": { "permission": "logs.read", "response": "json" },
+      "cancel_job": { "permission": "jobs.cancel", "response": "json" }
+    }
+  },
+  "ui": {
+    "mode": "esm",
+    "entry": "ui.js",
+    "isolation": "scoped",
+    "tabs": ["main", "env"]
+  },
+  "capabilities": {
+    "provides": ["deploy.orchestrator", "packages.registry"],
+    "consumes": []
+  }
+}

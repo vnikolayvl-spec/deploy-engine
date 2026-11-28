@@ -6,7 +6,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_ENGINE_VERSION = "3.0.0"
+DEFAULT_ENGINE_VERSION = "3.1.0"
 
 _SEMVER_RE = re.compile(
     r"^\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?\s*$"
@@ -16,7 +16,7 @@ _CONSTRAINT_RE = re.compile(r"^(>=|<=|!=|==|~=|~=|>|<)\s*(.+)$")
 
 
 def get_engine_version() -> str:
-    """Возвращает текущую версию Deploy Engine из VERSION.txt (fallback: 3.0.0)."""
+    """Возвращает текущую версию Deploy Engine из VERSION.txt (fallback: 3.1.0)."""
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
         os.path.normpath(os.path.join(here, "..", "..", "..", "VERSION.txt")),

@@ -1,7 +1,7 @@
 {
   "packages": {
     "deploy-engine": {
-      "version": "3.0.0",
+      "version": "3.1.0",
       "desc": "Модульный кроссплатформенный оркестратор развертывания пакетов, резервного копирования и TUI-управления",
       "sys_packages": {
         "linux": [
@@ -44,6 +44,7 @@
       "include": [
         "deploy.env",
         "files",
+        "web",
         "deploy-engine.sh",
         "deploy-engine",
         "deploy-ui.sh",
@@ -61,6 +62,11 @@
       "type": "file",
       "desc": "Модульное Python-ядро и библиотеки оркестратора Deploy Engine",
       "dest": "/opt/de_deploy-engine/files"
+    },
+    "web": {
+      "type": "web",
+      "desc": "Веб-модуль оркестратора Deploy Engine для панели de-web (/opt/de_deploy-engine/web)",
+      "dest": "/opt/de_deploy-engine/web"
     },
     "deploy-engine.sh": {
       "type": "script",

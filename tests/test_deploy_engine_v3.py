@@ -44,7 +44,7 @@ class TestDeployEngineV3Core(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_version_and_editor_fallbacks(self):
-        self.assertEqual(get_engine_version(), "3.0.0")
+        self.assertEqual(get_engine_version(), "3.1.0")
         self.assertEqual(EnvConfigEditor.EDITOR_FALLBACKS, ("vim", "vi", "nano"))
         self.assertEqual(compare_semver("1.2.0", "1.10.0"), -1)
         self.assertEqual(compare_semver("2.0.0-rc1", "2.0.0"), -1)

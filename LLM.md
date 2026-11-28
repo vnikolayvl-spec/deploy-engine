@@ -1,4 +1,4 @@
-# 🤖 Deploy Engine (версия 3.0.0) — Техническая спецификация для LLM
+# 🤖 Deploy Engine (версия 3.1.0) — Техническая спецификация для LLM
 
 Данный документ описывает архитектуру, модульную структуру, правила разработки, ключи CLI и переменные окружения `deploy-engine` для языковых моделей и разработчиков.
 
@@ -25,7 +25,7 @@
 deploy-engine/
 ├── manifest.json              # Манифест для самоустановки движка в /opt/de_deploy-engine
 ├── deploy.env                 # Шаблон системной конфигурации (/etc/default/de_deploy-engine/deploy-engine.env)
-├── VERSION.txt                # Номер версии (3.0.0)
+├── VERSION.txt                # Номер версии (3.1.0)
 ├── COMMIT.txt                 # Описание текущего релиза
 ├── CHANGELOG.txt              # История изменений по версиям
 ├── README.md                  # Пользовательская документация с описанием всех ключей и ENV
@@ -33,7 +33,20 @@ deploy-engine/
 ├── scripts/
 │   ├── deploy-engine.sh       # Системный CLI лаунчер -> {{SYS_BIN}}/deploy-engine
 │   └── deploy-ui.sh           # Системный TUI лаунчер -> {{SYS_BIN}}/deploy-ui
-├── tests/                     # Модульные и интеграционные тесты (unittest)
+├── web/                       # Нативный веб-модуль de-web (schema_version: 2, type: "web")
+│   ├── web.json               # Метаданные модуля, ACL-права и роли
+│   ├── api.py                 # JSON stdin/stdout API с серверной проверкой ACL (DeployEngineWebApi)
+│   ├── engine_bridge.py       # Мост к Engine: состояние, предпросмотр плана, детали, логи, git sync (EngineBridge)
+│   ├── env_service.py         # Инспекция .env (--show), форма и сохранение пресетов (EnvWebService)
+│   ├── job_store.py           # Хранилище задач (0600), NDJSON-логи, live-lock, SIGINT-отмена (JobStore)
+│   ├── job_worker.py          # Отвязанный фоновый воркер выполнения плана с LIFO-откатом (JobWorker)
+│   └── ui.js                  # Собранный ESM-бандл интерфейса (node web-sdk/build-module.mjs deploy-engine)
+├── web-src/                   # Исходники UI веб-модуля (Preact + TypeScript, токены --de-*)
+│   ├── index.tsx              # Корневой компонент DeployEngineConsole и mount(container, sdk)
+│   ├── types.ts               # Типы контракта API и состояния
+│   ├── styles.ts              # Локальные стили модуля поверх CSS-токенов панели
+│   └── components/            # PackageTreePanel, PackageDetailsModal, EnvWizardModal, JobMonitorModal, JobHistoryTab
+├── tests/                     # Модульные и интеграционные тесты (unittest, включая test_web_module.py)
 └── files/
     ├── main.py                # Единая точка входа (CLI + TUI, <= 300 строк)
     ├── app.env.example        # Пример локального файла конфигурации
@@ -117,7 +130,7 @@ deploy-engine/
 
 ### Ключи командной строки
 - **Позиционные аргументы (`pos_args`)**: команда (`install`, `uninstall`, `reinstall`, `upgrade`, `config`, `backup`, `restore`, `list`, `info`, `completion`, `scan`, `tui`, `version`, `help`) и цели (`<pkg>` или `<pkg>:<unit>`).
-- **`--version`, `-V`**: вывод текущей версии Deploy Engine (`v3.0.0`).
+- **`--version`, `-V`**: вывод текущей версии Deploy Engine (`v3.1.0`).
 - **`--tui`, `-u`**: принудительный запуск TUI.
 - **`--info`, `-i [ПАКЕТ]`**: вывод подробной карточки пакета в CLI.
 - **`--preset`**: открыть/показать пресет из внутреннего хранилища вместо системного `.env` (для команды `config`).

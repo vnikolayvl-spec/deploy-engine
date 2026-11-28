@@ -1,4 +1,4 @@
-# 🔧 Deploy Engine (версия 3.0.0)
+# 🔧 Deploy Engine (версия 3.1.0)
 
 **Deploy Engine** — модульный, кроссплатформенный и автономный оркестратор развертывания инфраструктуры в концепции **Infrastructure-as-Code (IaC)** на Python.
 
@@ -56,6 +56,22 @@
 4. **Универсальная поддержка русских хоткеев (`RU <-> EN`)**:
    - Двойное нажатие **`q-q`** или **`й-й`** в течение 1 секунды — выход из TUI.
    - Клавиша **`e`** или **`у`** — открытие компактного редактора `.env` для выбранного пакета.
+
+---
+
+## 🌐 Веб-модуль для панели `de-web` (`web/` и `web-src/`)
+
+Начиная с версии `3.1.0`, `deploy-engine` включает нативный веб-модуль (`"type": "web"` в `manifest.json`, устанавливается в `/opt/de_deploy-engine/web`), реализующий функциональность TUI и расширенные инструменты оркестрации прямо в панели `de-web`:
+
+- **Среды выполнения**: локальный хост (`Live`), песочница (`Sandbox`: `debian`, `ubuntu`, `alpine`, `arch`, `fedora`, `macos`) и `Dry-Run`.
+- **Дерево пакетов и план**: выбор действий (`install`, `reinstall`, `upgrade`, `uninstall`), точечное обновление отдельных юнитов (`web`, `files`, `unit`, `script`, `env`, `symlink` + опция `--with-hooks`), резервное копирование и восстановление, обновление базы `deploy-packages` (`git pull --ff-only` + `scan`).
+- **Инспектор и мастер `.env`**: просмотр развернутых значений (`config <pkg> --show` с маскированием секретов и ACL-разрешением `env.reveal`), редактирование пресетов/системного `.env` и обязательный мастер подтверждения `.env` до запуска задачи (с поддержкой `#GEN:...#`, `#AUTO#`, `#SKIP#`).
+- **Фоновые задачи и аудит**: выполнение плана в отдельном процессе (`web/job_worker.py`), live-потоковые логи (общая вкладка + вкладки по пакетам), безопасная отмена через `SIGINT` с атомарным `LIFO`-откатом (`TransactionManager`), блокировка параллельных live-задач и постоянная история запусков (`/var/lib/de_deploy-engine/web_jobs`).
+- **ACL-модель (`web/web.json`, `schema_version: 2`)**: права `view`, `plan.execute`, `sandbox.run`, `env.read`, `env.write`, `env.reveal`, `service.control`, `backup.manage`, `repo.sync`, `jobs.cancel`, `logs.read` (роль `admin: ["*"]`, роль `operator: ["view", "sandbox.run", "env.read", "logs.read"]`).
+- **Сборка фронтенда**:
+  ```bash
+  node web-sdk/build-module.mjs deploy-engine
+  ```
 
 ---
 
